@@ -24,9 +24,16 @@ SH_ENTRIES = "Записи"
 
 class SheetsManager:
     def __init__(self):
-        creds = Credentials.from_service_account_file(
-            os.getenv("GOOGLE_CREDS_FILE", "credentials.json"), scopes=SCOPES
-        )
+        creds_json = os.getenv("GOOGLE_CREDS_JSON")
+        if creds_json:
+            import json
+            creds = Credentials.from_service_account_info(
+                json.loads(creds_json), scopes=SCOPES
+            )
+        else:
+            creds = Credentials.from_service_account_file(
+                os.getenv("GOOGLE_CREDS_FILE", "credentials.json"), scopes=SCOPES
+            )
         self.gc = gspread.authorize(creds)
         self.ss = self.gc.open_by_key(os.getenv("SPREADSHEET_ID"))
         self._init_sheets()
