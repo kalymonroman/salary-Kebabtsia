@@ -1,0 +1,16 @@
+services:
+  - type: worker
+    name: salary-bot
+    runtime: python
+    pythonVersion: "3.11.9"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SPREADSHEET_ID
+        sync: false
+      - key: GOOGLE_CREDS_FILE
+        sync: false
+      - key: GOOGLE_CREDS_JSON
+        sync: false
