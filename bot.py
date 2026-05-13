@@ -4,8 +4,8 @@
 import logging
 import os
 from dotenv import load_dotenv
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-
 from handlers.worker import (
     start, fill_conv, edit_conv, add_day_conv, del_day_conv, my_records
 )
@@ -58,7 +58,7 @@ def main():
     app.add_handler(unset_role_conv())
 
     logging.info("Бот запущено...")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
