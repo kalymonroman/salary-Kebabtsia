@@ -1,6 +1,5 @@
 import logging
 import os
-import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -23,10 +22,10 @@ logging.basicConfig(
 )
 
 
-async def main():
+def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
-        raise ValueError("BOT_TOKEN не знайдено в .env")
+        raise ValueError("BOT_TOKEN не знайдено")
 
     app = Application.builder().token(token).build()
 
@@ -50,8 +49,8 @@ async def main():
     app.add_handler(unset_role_conv())
 
     logging.info("Бот запущено...")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
