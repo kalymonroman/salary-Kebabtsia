@@ -1,5 +1,7 @@
 import logging
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -21,6 +23,19 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
+def run_server():
+    HTTPServer(("0.0.0.0", 8080), PingHandler).serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
+
 
 def main():
     token = os.getenv("BOT_TOKEN")
@@ -41,16 +56,4 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("workers", list_workers))
-    app.add_handler(CommandHandler("worker_report", worker_filter))
-    app.add_handler(CallbackQueryHandler(toggle_callback, pattern=r"^(univ|bonus):"))
-    app.add_handler(CommandHandler("access", access_menu))
-    app.add_handler(CommandHandler("list_roles", list_roles))
-    app.add_handler(set_role_conv())
-    app.add_handler(unset_role_conv())
-
-    logging.info("Бот запущено...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    main()
+    app.add_handler(CommandHandler("worker_r
