@@ -56,4 +56,16 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("workers", list_workers))
-    app.add_handler(CommandHandler("worker_r
+    app.add_handler(CommandHandler("worker_report", worker_filter))
+    app.add_handler(CallbackQueryHandler(toggle_callback, pattern=r"^(univ|bonus):"))
+    app.add_handler(CommandHandler("access", access_menu))
+    app.add_handler(CommandHandler("list_roles", list_roles))
+    app.add_handler(set_role_conv())
+    app.add_handler(unset_role_conv())
+
+    logging.info("Бот запущено...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
