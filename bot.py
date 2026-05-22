@@ -23,14 +23,19 @@ logging.basicConfig(
 )
 
 
-def run_bot():
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+def run_webapp():
+    from webapp import app
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
+
+def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise ValueError("BOT_TOKEN не знайдено")
+
+    threading.Thread(target=run_webapp, daemon=True).start()
+    logging.info("Веб-панель запущено")
 
     application = Application.builder().token(token).build()
 
@@ -58,8 +63,4 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    logging.info("Бот запущено в окремому потоці")
-
-    from webapp import app
+    main()
