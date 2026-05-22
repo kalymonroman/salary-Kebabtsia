@@ -1,7 +1,9 @@
+"""
+Головний файл бота — запускає і Telegram бот і веб-панель
+"""
 import logging
 import os
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -23,25 +25,20 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-class PingHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, *args):
-        pass
 
-def run_server():
+def run_webapp():
+    from webapp import app
     port = int(os.environ.get("PORT", 8080))
-    HTTPServer(("0.0.0.0", port), PingHandler).serve_forever()
-
-threading.Thread(target=run_server, daemon=True).start()
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
 def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise ValueError("BOT_TOKEN не знайдено")
+
+    threading.Thread(target=run_webapp, daemon=True).start()
+    logging.info("Веб-панель запущено")
 
     app = Application.builder().token(token).build()
 
