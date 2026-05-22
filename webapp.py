@@ -2,7 +2,6 @@
 Веб-панель адміна для обліку зарплати
 """
 import os
-import json
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, session
 
@@ -17,6 +16,27 @@ def get_db():
     from sheets import SheetsManager
     return SheetsManager()
 
+def parse_month(month_str):
+    try:
+        parts = month_str.split("-")
+        return int(parts[0]), int(parts[1])
+    except Exception:
+        now = datetime.now()
+        return now.year, now.month
+
+def get_entries_for_user(db, tid, loc, m, y):
+    role = db.get_role(tid)
+    if not role:
+        return None, None
+    if role["role"] == "location_admin":
+        loc = db.get_admin_location(tid)
+        entries = db.get_location_entries(loc, m, y)
+    elif loc:
+        entries = db.get_location_entries(loc, m, y)
+    else:
+        entries = db.get_all_entries(m, y)
+    return role, entries
+
 HTML = r"""<!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -27,17 +47,16 @@ HTML = r"""<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e8e8e8;min-height:100vh;font-size:13px}
 .topbar{background:#1a1d27;border-bottom:1px solid #2a2d3a;padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:sticky;top:0;z-index:100}
-.topbar-title{font-size:14px;font-weight:500;color:#fff;display:flex;align-items:center;gap:6px}
+.topbar-title{font-size:14px;font-weight:500;color:#fff}
 .ctrl{display:flex;gap:6px;align-items:center;flex:1;flex-wrap:wrap}
 select,input[type=text],input[type=password],input[type=number]{background:#2a2d3a;border:1px solid #3a3d4a;color:#e8e8e8;padding:6px 9px;border-radius:8px;font-size:12px;outline:none}
 select:focus,input:focus{border-color:#3b6ef0}
-.nav-tabs{display:flex;gap:0;background:#1a1d27;border-bottom:1px solid #2a2d3a;padding:0 16px}
+.nav-tabs{display:flex;background:#1a1d27;border-bottom:1px solid #2a2d3a;padding:0 16px}
 .ntab{padding:10px 16px;font-size:13px;color:#8b8fa8;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s}
 .ntab.active{color:#fff;border-bottom-color:#3b6ef0}
-.ntab:hover{color:#e8e8e8}
 .main{padding:14px 16px}
 .filter-row{display:flex;gap:5px;margin-bottom:10px;flex-wrap:wrap}
-.ftab{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid #3a3d4a;cursor:pointer;color:#8b8fa8;background:#1a1d27;transition:all .15s}
+.ftab{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid #3a3d4a;cursor:pointer;color:#8b8fa8;background:#1a1d27}
 .ftab.active{background:#3b6ef0;color:#fff;border-color:#3b6ef0}
 .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
 .stat{background:#1a1d27;border:1px solid #2a2d3a;border-radius:10px;padding:9px 12px}
@@ -64,9 +83,7 @@ tfoot td:first-child,tfoot td:nth-child(2){text-align:left}
 .save-bar{position:fixed;bottom:0;left:0;right:0;background:#1a2040;border-top:1px solid #3b6ef0;padding:10px 16px;display:flex;align-items:center;gap:10px;transform:translateY(100%);transition:transform .3s;z-index:200}
 .save-bar.show{transform:translateY(0)}
 .btn{padding:7px 16px;border-radius:8px;border:1px solid #3a3d4a;cursor:pointer;font-size:12px;font-weight:500;background:#2a2d3a;color:#e8e8e8}
-.btn:hover{background:#3a3d4a}
 .btn-primary{background:#3b6ef0;color:#fff;border-color:#3b6ef0}
-.btn-primary:hover{background:#2d5ce0}
 .btn-sm{padding:5px 10px;font-size:11px}
 .toast{position:fixed;top:16px;right:16px;padding:10px 16px;border-radius:8px;font-size:13px;z-index:300;transition:opacity .3s;opacity:0;pointer-events:none}
 .toast.ok{background:#1a3a2a;border:1px solid #2a6040;color:#4adf8a}
@@ -81,10 +98,9 @@ tfoot td:first-child,tfoot td:nth-child(2){text-align:left}
 .login-err{color:#ff6b6b;font-size:11px;margin-top:6px;min-height:16px}
 .role-badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:500;background:#1a2a50;color:#5a8aff}
 .screen{display:none}.screen.active{display:block}
-.stats-inner{display:flex;gap:5px;margin-bottom:12px;flex-wrap:wrap}
 .stab{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid #3a3d4a;cursor:pointer;color:#8b8fa8;background:#1a1d27}
 .stab.active{background:#3b6ef0;color:#fff;border-color:#3b6ef0}
-@media(max-width:600px){.stat-grid{grid-template-columns:repeat(2,1fr)}.ctrl{gap:4px}}
+@media(max-width:600px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
@@ -158,21 +174,19 @@ function login(){
   </div>
   <div class="table-wrap">
     <table>
-      <thead>
-        <tr>
-          <th onclick="sortBy('date')" style="text-align:left">Дата ↕</th>
-          <th onclick="sortBy('name')" style="text-align:left">Працівник ↕</th>
-          <th onclick="sortBy('location')">Заклад ↕</th>
-          <th onclick="sortBy('hours')">Год. ↕</th>
-          <th onclick="sortBy('rate')">Ставка</th>
-          <th onclick="sortBy('revenue')">Виторг ↕</th>
-          <th onclick="sortBy('base_pay')">База ↕</th>
-          <th onclick="sortBy('rate_bonus')">Бонус каси ↕</th>
-          <th class="cb-cell">🔧 Унів<br><span style="font-weight:400;font-size:10px">+150</span></th>
-          <th class="cb-cell">⭐ Премія<br><span style="font-weight:400;font-size:10px">+200</span></th>
-          <th onclick="sortBy('total')">Разом ↕</th>
-        </tr>
-      </thead>
+      <thead><tr>
+        <th onclick="sortBy('date')" style="text-align:left">Дата ↕</th>
+        <th onclick="sortBy('name')" style="text-align:left">Працівник ↕</th>
+        <th onclick="sortBy('location')">Заклад ↕</th>
+        <th onclick="sortBy('hours')">Год. ↕</th>
+        <th onclick="sortBy('rate')">Ставка</th>
+        <th onclick="sortBy('revenue')">Виторг ↕</th>
+        <th onclick="sortBy('base_pay')">База ↕</th>
+        <th onclick="sortBy('rate_bonus')">Бонус каси ↕</th>
+        <th class="cb-cell">🔧 Унів<br><span style="font-weight:400;font-size:10px">+150</span></th>
+        <th class="cb-cell">⭐ Премія<br><span style="font-weight:400;font-size:10px">+200</span></th>
+        <th onclick="sortBy('total')">Разом ↕</th>
+      </tr></thead>
       <tbody id="tbody"></tbody>
       <tfoot id="tfoot"></tfoot>
     </table>
@@ -180,11 +194,11 @@ function login(){
 </div>
 
 <div id="page-stats" class="screen">
-  <div class="stats-inner" id="stats-tabs">
+  <div style="display:flex;gap:5px;margin-bottom:12px;flex-wrap:wrap" id="stats-tabs">
     <div class="stab active" onclick="setStatsTab('loc',this)">По закладах</div>
     <div class="stab" onclick="setStatsTab('workers',this)">По працівниках</div>
   </div>
-  <div id="stats-content"><div style="color:#6b6f7e;padding:20px">Завантаження...</div></div>
+  <div id="stats-content"><div style="color:#6b6f7e;padding:20px">Перейдіть на Таблицю спочатку</div></div>
 </div>
 
 </div>
@@ -194,7 +208,6 @@ function login(){
   <button class="btn btn-primary" onclick="saveChanges()">💾 Зберегти зміни</button>
   <button class="btn" onclick="discardChanges()">Скасувати</button>
 </div>
-
 <div class="toast" id="toast"></div>
 
 <script>
@@ -216,52 +229,75 @@ async function loadAll(){
   changed={};
   updateSaveBar();
   render();
-  if(document.getElementById('page-stats').classList.contains('active')) await loadStats();
+  // Будуємо статистику з вже завантажених даних
+  buildStats(allData);
 }
 
-async function loadStats(){
-  document.getElementById('stats-content').innerHTML='<div style="color:#6b6f7e;padding:20px">Завантаження...</div>';
-  const {month,loc}=getParams();
-  const r=await fetch(`/api/stats?month=${month}&loc=${encodeURIComponent(loc)}`);
-  statsData=await r.json();
-  renderStats();
+function buildStats(data){
+  const byLoc={}, byWorker={};
+  data.forEach(e=>{
+    const l=e.location||'?';
+    const wKey=String(e.telegram_id);
+    const rate=parseFloat(e.rate)||1;
+    const hours=parseFloat(e.hours)||0;
+    const s1=rate===1?hours*110:0;
+    const s15=rate===1.5?hours*130:0;
+    const bonusV=parseFloat(e.rate_bonus)||0;
+    const univV=parseFloat(e.universal)||0;
+    const premV=parseFloat(e.bonus)||0;
+    const tot=s1+s15+bonusV+univV+premV;
+
+    if(!byLoc[l]) byLoc[l]={name:l,workers:new Set(),count:0,hours:0,s1:0,s15:0,bonus:0,univ:0,premium:0,total:0};
+    byLoc[l].workers.add(wKey);
+    byLoc[l].count++;
+    byLoc[l].hours+=hours;
+    byLoc[l].s1+=s1; byLoc[l].s15+=s15;
+    byLoc[l].bonus+=bonusV; byLoc[l].univ+=univV; byLoc[l].premium+=premV;
+    byLoc[l].total+=tot;
+
+    if(!byWorker[wKey]) byWorker[wKey]={name:e.name,loc:l,count:0,hours:0,s1:0,s15:0,bonus:0,univ:0,premium:0,total:0};
+    byWorker[wKey].count++;
+    byWorker[wKey].hours+=hours;
+    byWorker[wKey].s1+=s1; byWorker[wKey].s15+=s15;
+    byWorker[wKey].bonus+=bonusV; byWorker[wKey].univ+=univV; byWorker[wKey].premium+=premV;
+    byWorker[wKey].total+=tot;
+  });
+
+  const locList=Object.values(byLoc).map(l=>({...l,workers:l.workers.size})).sort((a,b)=>a.name.localeCompare(b.name));
+  const workerList=Object.values(byWorker).sort((a,b)=>a.name.localeCompare(b.name));
+  statsData={by_location:locList,by_worker:workerList};
+  if(document.getElementById('page-stats').classList.contains('active')) renderStats();
 }
 
 function sortBy(key){
   if(sortKey===key)sortAsc=!sortAsc; else{sortKey=key;sortAsc=true;}
   render();
 }
-
 function setFilter(f,el){
   filterMode=f;
   document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   render();
 }
-
 function setStatsTab(tab,el){
   statsTab=tab;
   document.querySelectorAll('.stab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   renderStats();
 }
-
 function getFiltered(){
   const q=(document.getElementById('search').value||'').toLowerCase();
   return allData.filter(r=>{
     if(q&&!r.name.toLowerCase().includes(q)&&!r.location.toLowerCase().includes(q))return false;
-    const isChanged=changed[r.row_id]!==undefined;
     const u=changed[r.row_id]?.univ??(parseFloat(r.universal||0)>0);
     const b=changed[r.row_id]?.bonus??(parseFloat(r.bonus||0)>0);
     if(filterMode==='no_univ')return !u;
     if(filterMode==='no_bonus')return !b;
-    if(filterMode==='changed')return isChanged;
+    if(filterMode==='changed')return changed[r.row_id]!==undefined;
     return true;
   });
 }
-
 function fmt(n){return Math.round(n).toLocaleString('uk');}
-
 function render(){
   let rows=getFiltered();
   rows.sort((a,b)=>{
@@ -270,56 +306,47 @@ function render(){
     if(sortKey==='date'){av=a.date.split('.').reverse().join('');bv=b.date.split('.').reverse().join('');}
     return sortAsc?(av>bv?1:-1):(av<bv?1:-1);
   });
-
-  let totBase=0,totRateB=0,totUniv=0,totBonus=0,totHours=0,grandTotal=0;
+  let totBase=0,totRateB=0,totUniv=0,totBonus=0,totHours=0,grand=0;
   document.getElementById('tbody').innerHTML=rows.map(r=>{
-    const isChanged=changed[r.row_id]!==undefined;
+    const isC=changed[r.row_id]!==undefined;
     const univ=changed[r.row_id]?.univ??(parseFloat(r.universal||0)>0);
     const bonus=changed[r.row_id]?.bonus??(parseFloat(r.bonus||0)>0);
     const base=parseFloat(r.base_pay||0);
     const rateB=parseFloat(r.rate_bonus||0);
-    const univA=univ?150:0;
-    const bonusA=bonus?200:0;
-    const rowTotal=base+rateB+univA+bonusA;
+    const univA=univ?150:0; const bonusA=bonus?200:0;
+    const rowTot=base+rateB+univA+bonusA;
     totBase+=base;totRateB+=rateB;totUniv+=univA;totBonus+=bonusA;
-    totHours+=parseFloat(r.hours||0);grandTotal+=rowTotal;
-    return `<tr class="${isChanged?'changed':''}" id="tr-${r.row_id}">
-      <td>${r.date}</td>
-      <td>${r.name}${isChanged?'<span class="dot"></span>':''}</td>
-      <td class="muted">${r.location}</td>
-      <td class="muted">${r.hours}</td>
+    totHours+=parseFloat(r.hours||0);grand+=rowTot;
+    return `<tr class="${isC?'changed':''}" id="tr-${r.row_id}">
+      <td>${r.date}</td><td>${r.name}${isC?'<span class="dot"></span>':''}</td>
+      <td class="muted">${r.location}</td><td class="muted">${r.hours}</td>
       <td class="muted">Ст.${r.rate}/${r.hourly_rate}грн</td>
-      <td class="muted">${fmt(r.revenue)}</td>
-      <td>${fmt(base)}</td>
+      <td class="muted">${fmt(r.revenue)}</td><td>${fmt(base)}</td>
       <td>${rateB>0?'+'+fmt(rateB):'—'}</td>
       <td class="cb-cell"><input type="checkbox" class="cb" ${univ?'checked':''} onchange="toggle(${r.row_id},'univ',this.checked)"></td>
       <td class="cb-cell"><input type="checkbox" class="cb" ${bonus?'checked':''} onchange="toggle(${r.row_id},'bonus',this.checked)"></td>
-      <td class="total-cell">${fmt(rowTotal)}</td>
+      <td class="total-cell">${fmt(rowTot)}</td>
     </tr>`;
   }).join('');
-
   document.getElementById('tfoot').innerHTML=`<tr>
     <td>↓ Разом</td><td>${rows.length} записів</td><td></td>
     <td>${totHours.toFixed(1)} год</td><td></td><td></td>
-    <td>${fmt(totBase)}</td>
-    <td>${totRateB>0?'+'+fmt(totRateB):'—'}</td>
+    <td>${fmt(totBase)}</td><td>${totRateB>0?'+'+fmt(totRateB):'—'}</td>
     <td class="cb-cell">${totUniv>0?'+'+fmt(totUniv):'—'}</td>
     <td class="cb-cell">${totBonus>0?'+'+fmt(totBonus):'—'}</td>
-    <td>${fmt(grandTotal)}</td>
+    <td>${fmt(grand)}</td>
   </tr>`;
-
   const univCnt=rows.filter(r=>changed[r.row_id]?.univ??(parseFloat(r.universal||0)>0)).length;
   const bonusCnt=rows.filter(r=>changed[r.row_id]?.bonus??(parseFloat(r.bonus||0)>0)).length;
   document.getElementById('s-cnt').textContent=rows.length;
   document.getElementById('s-univ').textContent=univCnt;
   document.getElementById('s-bonus').textContent=bonusCnt;
   document.getElementById('s-add').textContent=fmt(univCnt*150+bonusCnt*200)+' грн';
-  document.getElementById('s-total').textContent=fmt(grandTotal)+' грн';
+  document.getElementById('s-total').textContent=fmt(grand)+' грн';
   document.getElementById('s-changed').textContent=Object.keys(changed).length;
 }
-
 function renderStats(){
-  if(!statsData){document.getElementById('stats-content').innerHTML='<div style="color:#6b6f7e;padding:20px">Немає даних</div>';return;}
+  if(!statsData){document.getElementById('stats-content').innerHTML='<div style="color:#6b6f7e;padding:20px">Спочатку завантажте Таблицю</div>';return;}
   const rows=statsTab==='loc'?statsData.by_location:statsData.by_worker;
   if(!rows||!rows.length){document.getElementById('stats-content').innerHTML='<div style="color:#6b6f7e;padding:20px">Немає даних за цей період</div>';return;}
   const fields=['s1','s15','bonus','univ','premium'];
@@ -328,7 +355,7 @@ function renderStats(){
   rows.forEach(r=>{fields.forEach(f=>colT[f]+=(r[f]||0));colT.total+=(r.total||0);colT.hours+=(r.hours||0);});
   const firstCol=statsTab==='loc'?'Заклад':'Працівник';
   document.getElementById('stats-content').innerHTML=`
-  <div class="table-wrap" style="margin-bottom:14px">
+  <div class="table-wrap">
     <table>
       <thead><tr>
         <th style="text-align:left">${firstCol}</th>
@@ -340,32 +367,37 @@ function renderStats(){
         <td>${r.name}${r.loc&&r.loc!==r.name?`<br><span class="muted">${r.loc}</span>`:''}</td>
         <td class="muted" style="text-align:right">${r.count||r.workers||0}</td>
         <td class="muted" style="text-align:right">${(r.hours||0).toFixed(1)}</td>
-        ${fields.map(f=>`<td>${r[f]>0?fmt(r[f]):'—'}</td>`).join('')}
+        ${fields.map(f=>`<td>${(r[f]||0)>0?fmt(r[f]):'—'}</td>`).join('')}
         <td class="total-cell">${fmt(r.total||0)}</td>
       </tr>`).join('')}</tbody>
       <tfoot><tr>
-        <td>↓ Разом</td><td></td>
-        <td>${colT.hours.toFixed(1)}</td>
+        <td>↓ Разом</td><td></td><td>${colT.hours.toFixed(1)}</td>
         ${fields.map(f=>`<td>${fmt(colT[f])}</td>`).join('')}
         <td>${fmt(colT.total)}</td>
       </tr></tfoot>
     </table>
   </div>`;
 }
-
 function toggle(rowId,field,val){
   if(!changed[rowId])changed[rowId]={};
   changed[rowId][field]=val;
   updateSaveBar();render();
+  // Оновлюємо статистику з урахуванням змін
+  const updatedData=allData.map(r=>{
+    if(r.row_id!==rowId)return r;
+    return {...r,
+      universal:changed[rowId]?.univ??(parseFloat(r.universal||0)>0)?150:0,
+      bonus:changed[rowId]?.bonus??(parseFloat(r.bonus||0)>0)?200:0
+    };
+  });
+  buildStats(updatedData);
 }
-
 function updateSaveBar(){
   const n=Object.keys(changed).length;
   document.getElementById('save-bar').classList.toggle('show',n>0);
   document.getElementById('save-info').textContent=n>0?`Змінено: ${n} ${n===1?'запис':'записів'}`:'';
   document.getElementById('s-changed').textContent=n;
 }
-
 async function saveChanges(){
   const updates=Object.entries(changed).map(([rowId,fields])=>({row_id:parseInt(rowId),...fields}));
   const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});
@@ -373,25 +405,20 @@ async function saveChanges(){
   if(d.ok){changed={};updateSaveBar();await loadAll();showToast('✅ Збережено в Google Sheets','ok');}
   else showToast('❌ Помилка збереження','err');
 }
-
 function discardChanges(){changed={};updateSaveBar();render();}
-
 function showToast(msg,type){
   const t=document.getElementById('toast');
   t.textContent=msg;t.className=`toast ${type} show`;
   setTimeout(()=>t.classList.remove('show'),3000);
 }
-
 async function showPage(name,el){
   document.querySelectorAll('.ntab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   document.getElementById('page-table').classList.toggle('active',name==='table');
   document.getElementById('page-stats').classList.toggle('active',name==='stats');
-  if(name==='stats') await loadStats();
+  if(name==='stats') renderStats();
 }
-
 function logout(){fetch('/api/logout',{method:'POST'}).then(()=>location.reload());}
-
 loadAll();
 </script>
 {% endif %}
@@ -463,40 +490,32 @@ def api_entries():
     month_str = request.args.get("month", "")
     loc = request.args.get("loc", "")
     db = get_db()
-    try:
-        y, m = map(int, month_str.split("-"))
-    except Exception:
-        now = datetime.now()
-        y, m = now.year, now.month
+    y, m = parse_month(month_str)
     tid = session["telegram_id"]
-    role = db.get_role(tid)
-    if not role:
+    role, entries = get_entries_for_user(db, tid, loc, m, y)
+    if role is None:
         return jsonify([])
-    if role["role"] == "location_admin":
-        loc = db.get_admin_location(tid)
-        entries = db.get_location_entries(loc, m, y)
-    elif loc:
-        entries = db.get_location_entries(loc, m, y)
-    else:
-        entries = db.get_all_entries(m, y)
     result = []
     for e in entries:
-        result.append({
-            "row_id": e.get("row_id", 0),
-            "telegram_id": str(e.get("telegram_id", "")),
-            "name": e.get("name", ""),
-            "date": e.get("date", ""),
-            "location": e.get("location", ""),
-            "hours": e.get("hours", 0),
-            "rate": e.get("rate", 1),
-            "revenue": e.get("revenue", 0),
-            "hourly_rate": e.get("hourly_rate", 110),
-            "base_pay": float(e.get("base_pay", 0)),
-            "rate_bonus": float(e.get("rate_bonus", 0)),
-            "universal": float(e.get("universal", 0)),
-            "bonus": float(e.get("bonus", 0)),
-            "total": float(e.get("total", 0)),
-        })
+        try:
+            result.append({
+                "row_id": e.get("row_id", 0),
+                "telegram_id": str(e.get("telegram_id", "")),
+                "name": e.get("name", ""),
+                "date": e.get("date", ""),
+                "location": e.get("location", ""),
+                "hours": float(e.get("hours", 0)),
+                "rate": float(e.get("rate", 1)),
+                "revenue": float(e.get("revenue", 0)),
+                "hourly_rate": float(e.get("hourly_rate", 110)),
+                "base_pay": float(e.get("base_pay", 0)),
+                "rate_bonus": float(e.get("rate_bonus", 0)),
+                "universal": float(e.get("universal", 0)),
+                "bonus": float(e.get("bonus", 0)),
+                "total": float(e.get("total", 0)),
+            })
+        except Exception:
+            continue
     return jsonify(result)
 
 
@@ -510,88 +529,19 @@ def api_save():
         row_id = u.get("row_id")
         if not row_id:
             continue
-        entry = db.get_entry_by_row(row_id)
-        if not entry:
+        try:
+            entry = db.get_entry_by_row(row_id)
+            if not entry:
+                continue
+            univ = 150.0 if u.get("univ", False) else 0.0
+            bonus = 200.0 if u.get("bonus", False) else 0.0
+            db.set_universal_bonus(
+                int(entry["telegram_id"]), entry["date"],
+                univ, bonus, row_id=row_id
+            )
+        except Exception:
             continue
-        univ = 150.0 if u.get("univ", False) else 0.0
-        bonus = 200.0 if u.get("bonus", False) else 0.0
-        db.set_universal_bonus(
-            int(entry["telegram_id"]), entry["date"],
-            univ, bonus, row_id=row_id
-        )
     return jsonify({"ok": True})
-
-
-@app.route("/api/stats")
-def api_stats():
-    if not session.get("logged_in"):
-        return jsonify({})
-    month_str = request.args.get("month", "")
-    loc = request.args.get("loc", "")
-    db = get_db()
-    try:
-        y, m = map(int, month_str.split("-"))
-    except Exception:
-        now = datetime.now()
-        y, m = now.year, now.month
-    tid = session["telegram_id"]
-    role = db.get_role(tid)
-    if not role:
-        return jsonify({})
-    if role["role"] == "location_admin":
-        loc = db.get_admin_location(tid)
-        entries = db.get_location_entries(loc, m, y)
-    elif loc:
-        entries = db.get_location_entries(loc, m, y)
-    else:
-        entries = db.get_all_entries(m, y)
-
-    by_loc = {}
-    by_worker = {}
-
-    for e in entries:
-        l = e.get("location", "?")
-        w_key = str(e.get("telegram_id", ""))
-        rate = float(e.get("rate", 1))
-        hours = float(e.get("hours", 0))
-        s1 = hours * 110 if rate == 1 else 0
-        s15 = hours * 130 if rate == 1.5 else 0
-        bonus_v = float(e.get("rate_bonus", 0))
-        univ_v = float(e.get("universal", 0))
-        prem_v = float(e.get("bonus", 0))
-        tot = s1 + s15 + bonus_v + univ_v + prem_v
-
-        if l not in by_loc:
-            by_loc[l] = {"name": l, "workers": set(), "count": 0, "hours": 0,
-                         "s1": 0, "s15": 0, "bonus": 0, "univ": 0, "premium": 0, "total": 0}
-        by_loc[l]["workers"].add(w_key)
-        by_loc[l]["count"] += 1
-        by_loc[l]["hours"] += hours
-        by_loc[l]["s1"] += s1
-        by_loc[l]["s15"] += s15
-        by_loc[l]["bonus"] += bonus_v
-        by_loc[l]["univ"] += univ_v
-        by_loc[l]["premium"] += prem_v
-        by_loc[l]["total"] += tot
-
-        if w_key not in by_worker:
-            by_worker[w_key] = {"name": e.get("name", ""), "loc": l, "count": 0, "hours": 0,
-                                "s1": 0, "s15": 0, "bonus": 0, "univ": 0, "premium": 0, "total": 0}
-        by_worker[w_key]["count"] += 1
-        by_worker[w_key]["hours"] += hours
-        by_worker[w_key]["s1"] += s1
-        by_worker[w_key]["s15"] += s15
-        by_worker[w_key]["bonus"] += bonus_v
-        by_worker[w_key]["univ"] += univ_v
-        by_worker[w_key]["premium"] += prem_v
-        by_worker[w_key]["total"] += tot
-
-    loc_list = sorted(by_loc.values(), key=lambda x: x["name"])
-    for l in loc_list:
-        l["workers"] = len(l["workers"])
-    worker_list = sorted(by_worker.values(), key=lambda x: x["name"])
-
-    return jsonify({"by_location": loc_list, "by_worker": worker_list})
 
 
 @app.route("/ping")
