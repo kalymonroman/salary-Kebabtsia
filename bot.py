@@ -1,6 +1,3 @@
-"""
-Головний файл бота — запускає і Telegram бот і веб-панель
-"""
 import logging
 import os
 import threading
@@ -26,44 +23,43 @@ logging.basicConfig(
 )
 
 
-def run_webapp():
-    from webapp import app
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+def run_bot():
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-
-def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise ValueError("BOT_TOKEN не знайдено")
 
-    threading.Thread(target=run_webapp, daemon=True).start()
-    logging.info("Веб-панель запущено")
+    application = Application.builder().token(token).build()
 
-    app = Application.builder().token(token).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(fill_conv())
-    app.add_handler(edit_conv())
-    app.add_handler(add_day_conv())
-    app.add_handler(del_day_conv())
-    app.add_handler(MessageHandler(filters.Regex("^📊 Мої записи$"), my_records))
-    app.add_handler(add_worker_conv())
-    app.add_handler(remove_worker_conv())
-    app.add_handler(CommandHandler("day", day_view))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("report", report))
-    app.add_handler(CommandHandler("workers", list_workers))
-    app.add_handler(CommandHandler("worker_report", worker_filter))
-    app.add_handler(CallbackQueryHandler(toggle_callback, pattern=r"^(univ|bonus):"))
-    app.add_handler(CommandHandler("access", access_menu))
-    app.add_handler(CommandHandler("list_roles", list_roles))
-    app.add_handler(set_role_conv())
-    app.add_handler(unset_role_conv())
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(fill_conv())
+    application.add_handler(edit_conv())
+    application.add_handler(add_day_conv())
+    application.add_handler(del_day_conv())
+    application.add_handler(MessageHandler(filters.Regex("^📊 Мої записи$"), my_records))
+    application.add_handler(add_worker_conv())
+    application.add_handler(remove_worker_conv())
+    application.add_handler(CommandHandler("day", day_view))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("report", report))
+    application.add_handler(CommandHandler("workers", list_workers))
+    application.add_handler(CommandHandler("worker_report", worker_filter))
+    application.add_handler(CallbackQueryHandler(toggle_callback, pattern=r"^(univ|bonus):"))
+    application.add_handler(CommandHandler("access", access_menu))
+    application.add_handler(CommandHandler("list_roles", list_roles))
+    application.add_handler(set_role_conv())
+    application.add_handler(unset_role_conv())
 
     logging.info("Бот запущено...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    main()
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    logging.info("Бот запущено в окремому потоці")
+
+    from webapp import app
