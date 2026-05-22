@@ -1,10 +1,5 @@
 """
-Хендлери для адміна закладу, головного адміна:
-  - /day — перегляд дня з таблицею унів/премій
-  - /stats — статистика закладу
-  - /report — зведений звіт по мережі (тільки superadmin+)
-  - /workers — список та управління працівниками
-  - /add_worker, /remove_worker
+Хендлери для адміна закладу, головного адміна
 """
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -17,7 +12,6 @@ from calc import LOCATIONS, UNIVERSAL_BONUS, DAILY_BONUS
 
 db = SheetsManager()
 
-# Стани
 (AW_NAME, AW_ID, AW_CONFIRM) = range(40, 43)
 (RW_SEARCH, RW_SELECT, RW_CONFIRM) = range(50, 53)
 
@@ -40,14 +34,13 @@ def _check_admin(tid):
 
 
 def _get_location_for(tid):
-    """Повертає заклад для перегляду: для location_admin — свій, для вищих — None (всі)."""
     r = db.get_role(tid)
     if r and r["role"] == "location_admin":
         return r.get("location", "")
     return None
 
 
-# ── /day — перегляд дня ───────────────────────────────────────────────────────
+# ── /day ──────────────────────────────────────────────────────────────────────
 
 async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
@@ -58,7 +51,6 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     today = _now().strftime("%d.%m.%Y")
     date = args[0] if args else today
-    # Нормалізація дати
     parts = date.split(".")
     if len(parts) == 2:
         date = f"{parts[0].zfill(2)}.{parts[1].zfill(2)}.{_now().year}"
@@ -69,26 +61,20 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entries = db.get_day_entries(loc_filter, date)
         loc_label = loc_filter
     else:
-        # Для superadmin/owner — якщо передали заклад другим аргументом
         if len(args) >= 2:
             loc_filter = " ".join(args[1:])
             entries = db.get_day_entries(loc_filter, date)
             loc_label = loc_filter
         else:
-            # Показати список закладів
             kb = ReplyKeyboardMarkup(
                 [[f"/day {date} {loc}"] for loc in LOCATIONS],
                 resize_keyboard=True, one_time_keyboard=True
             )
-            await update.message.reply_text(
-                f"📅 {date}\nОберіть заклад:", reply_markup=kb
-            )
+            await update.message.reply_text(f"📅 {date}\nОберіть заклад:", reply_markup=kb)
             return
 
     if not entries:
-        await update.message.reply_text(
-            f"📅 {date} — {loc_label}\n📭 Записів немає."
-        )
+        await update.message.reply_text(f"📅 {date} — {loc_label}\n📭 Записів немає.")
         return
 
     lines = [f"📅 *{date}* — {loc_label}\nПрацівників: {len(entries)}\n"]
@@ -97,6 +83,7 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for r in entries:
         name = r["name"]
         tid_w = str(r["telegram_id"])
+        row_id = str(r.get("row_id", 0))
         univ = float(r.get("universal", 0)) > 0
         bonus = float(r.get("bonus", 0)) > 0
         u_icon = "✅" if univ else "⬜"
@@ -109,11 +96,11 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([
             InlineKeyboardButton(
                 f"{'🔧✅' if univ else '🔧⬜'} {name[:12]}",
-                callback_data=f"univ:{tid_w}:{date}:{int(not univ)}"
+                callback_data=f"univ:{tid_w}:{date}:{int(not univ)}:{row_id}"
             ),
             InlineKeyboardButton(
                 f"{'⭐✅' if bonus else '⭐⬜'}",
-                callback_data=f"bonus:{tid_w}:{date}:{int(not bonus)}"
+                callback_data=f"bonus:{tid_w}:{date}:{int(not bonus)}:{row_id}"
             ),
         ])
 
@@ -133,10 +120,14 @@ async def toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("⛔ Немає доступу", show_alert=True)
         return
 
-    action, tid_w, date, val = query.data.split(":")
-    val = int(val)
+    parts = query.data.split(":")
+    action = parts[0]
+    tid_w = parts[1]
+    date = parts[2]
+    val = int(parts[3])
+    row_id = int(parts[4]) if len(parts) > 4 else None
 
-    entry = db.get_entry_by_date(int(tid_w), date)
+    entry = db.get_entry_by_row(row_id) if row_id else None
     if not entry:
         await query.answer("Запис не знайдено", show_alert=True)
         return
@@ -146,37 +137,35 @@ async def toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "univ":
         new_univ = UNIVERSAL_BONUS if val else 0
-        db.set_universal_bonus(int(tid_w), date, new_univ, current_bonus)
-        icon = "✅" if val else "⬜"
+        db.set_universal_bonus(int(tid_w), date, new_univ, current_bonus, row_id=row_id)
         await query.answer(f"🔧 Універсал {'нараховано' if val else 'знято'}")
     else:
         new_bonus = DAILY_BONUS if val else 0
-        db.set_universal_bonus(int(tid_w), date, current_univ, new_bonus)
-        icon = "✅" if val else "⬜"
+        db.set_universal_bonus(int(tid_w), date, current_univ, new_bonus, row_id=row_id)
         await query.answer(f"⭐ Премія {'нарахована' if val else 'знята'}")
 
-    # Оновлюємо кнопки
     keyboard = query.message.reply_markup.inline_keyboard
     new_keyboard = []
     for row in keyboard:
         new_row = []
         for btn in row:
-            data = btn.callback_data
-            if data == query.data:
-                # Перемикаємо
+            if btn.callback_data == query.data:
                 if action == "univ":
                     name_part = btn.text.split(" ", 1)[1] if " " in btn.text else ""
                     new_text = f"{'🔧✅' if val else '🔧⬜'} {name_part}"
                 else:
                     new_text = f"{'⭐✅' if val else '⭐⬜'}"
-                new_row.append(InlineKeyboardButton(new_text, callback_data=f"{action}:{tid_w}:{date}:{int(not val)}"))
+                new_row.append(InlineKeyboardButton(
+                    new_text,
+                    callback_data=f"{action}:{tid_w}:{date}:{int(not val)}:{row_id}"
+                ))
             else:
                 new_row.append(btn)
         new_keyboard.append(new_row)
     await query.edit_message_reply_markup(InlineKeyboardMarkup(new_keyboard))
 
 
-# ── /stats — статистика закладу ───────────────────────────────────────────────
+# ── /stats ────────────────────────────────────────────────────────────────────
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
@@ -189,7 +178,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc_filter = _get_location_for(tid)
 
     if not loc_filter:
-        # superadmin/owner — треба вказати заклад
         if args:
             loc_filter = " ".join(args)
         else:
@@ -213,8 +201,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = [
         f"📊 *{loc_filter}* — {MONTHS_UA[now.month]} {now.year}\n",
-        f"1. Погодинна оплата: {_fmt(total_base)} грн",
-        f"2. Бонус ставки 1.5: {_fmt(total_rate_b)} грн",
+        f"1. Погодинна база (110 грн/год): {_fmt(total_base)} грн",
+        f"2. Бонус від каси: {_fmt(total_rate_b)} грн",
         f"3. Надбавка унів.: {_fmt(total_univ)} грн",
         f"4. Премії: {_fmt(total_bonus)} грн",
         f"─────────────────",
@@ -230,7 +218,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-# ── /report — зведений звіт по мережі ────────────────────────────────────────
+# ── /report ───────────────────────────────────────────────────────────────────
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
@@ -257,15 +245,15 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(
             f"📍 *{loc}*\n"
             f"  Прац.: {s['worker_count']} | Год.: {s['hours']:.1f}\n"
-            f"  База: {_fmt(s['base_pay'])} | Бонус 1.5: {_fmt(s['rate_bonus'])}\n"
+            f"  База: {_fmt(s['base_pay'])} | Бонус каси: {_fmt(s['rate_bonus'])}\n"
             f"  Унів.: +{_fmt(s['universal'])} | Премії: +{_fmt(s['bonus'])}\n"
             f"  💵 {_fmt(s['total'])} грн"
         )
 
     lines += [
         f"\n─────────────────",
-        f"1. Погодинна: {_fmt(grand['base_pay'])} грн",
-        f"2. Бонус 1.5: {_fmt(grand['rate_bonus'])} грн",
+        f"1. Погодинна база: {_fmt(grand['base_pay'])} грн",
+        f"2. Бонус від каси: {_fmt(grand['rate_bonus'])} грн",
         f"3. Унів.: +{_fmt(grand['universal'])} грн",
         f"4. Премії: +{_fmt(grand['bonus'])} грн",
         f"💵 *Разом: {_fmt(grand['total'])} грн*",
@@ -274,16 +262,13 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def worker_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Фільтр по конкретному працівнику для superadmin/owner."""
     tid = update.effective_user.id
     if not db.is_superadmin_or_above(tid):
         await update.message.reply_text("⛔ Немає доступу.")
         return
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "Використання: /worker_report Ім'я\nНаприклад: /worker_report Олена"
-        )
+        await update.message.reply_text("Використання: /worker_report Ім'я")
         return
     query = " ".join(args)
     workers = db.search_workers(query)
@@ -314,8 +299,8 @@ async def worker_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         lines.append(f"👤 *{w['name']}* — {MONTHS_UA[now.month]} {now.year}")
         lines.append(f"Днів: {len(entries)} | Год.: {hours:.1f}")
-        lines.append(f"1. Погодинна: {_fmt(base)} грн")
-        lines.append(f"2. Бонус 1.5: {_fmt(rate_b)} грн")
+        lines.append(f"1. Погодинна база: {_fmt(base)} грн")
+        lines.append(f"2. Бонус від каси: {_fmt(rate_b)} грн")
         lines.append(f"3. Унів.: +{_fmt(univ)} грн")
         lines.append(f"4. Премії: +{_fmt(bonus)} грн")
         lines.append(f"💵 *Разом: {_fmt(total)} грн*\n")
@@ -335,7 +320,7 @@ async def worker_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-# ── /workers — список ─────────────────────────────────────────────────────────
+# ── /workers ──────────────────────────────────────────────────────────────────
 
 async def list_workers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
@@ -369,7 +354,7 @@ async def add_worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["aw_name"] = update.message.text.strip()
     await update.message.reply_text(
         "Введіть Telegram ID працівника.\n\n"
-        "_Попросіть його написати @userinfobot — він покаже ID_",
+        "_Попросіть написати @userinfobot — він покаже ID_",
         parse_mode="Markdown"
     )
     return AW_ID
@@ -403,11 +388,9 @@ async def add_worker_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
         new_id = context.user_data["aw_id"]
         db.add_worker(new_id, name)
         await update.message.reply_text(
-            f"✅ {name} доданий до системи.\n"
-            f"Він може написати боту /start щоб розпочати.",
+            f"✅ {name} доданий до системи.",
             reply_markup=ReplyKeyboardRemove()
         )
-        # Спробуємо надіслати сповіщення
         try:
             await context.bot.send_message(
                 chat_id=new_id,
