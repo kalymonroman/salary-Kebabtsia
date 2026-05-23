@@ -1,8 +1,5 @@
 """
 Робота з Google Sheets v2
-- Підтримка кількох записів за один день
-- Ідентифікація запису по row_id
-- Редагування адміном без обмеження місяця
 """
 import os
 import json
@@ -55,10 +52,9 @@ class SheetsManager:
         return self.ss.worksheet(name)
 
     def _parse_date(self, d):
-    return datetime.strptime(str(d).strip().lstrip("'"), "%d.%m.%Y")
+        return datetime.strptime(str(d).strip().lstrip("'"), "%d.%m.%Y")
 
     def _rows_to_dicts(self, ws):
-        """Повертає всі рядки як словники з row_id."""
         headers = ws.row_values(1)
         all_rows = ws.get_all_values()
         result = []
@@ -171,9 +167,10 @@ class SheetsManager:
         return sorted(result, key=lambda x: (self._parse_date(x["date"]), x["row_id"]))
 
     def get_entries_by_date(self, telegram_id, date):
-        """Всі записи працівника за конкретну дату."""
+        clean = str(date).strip().lstrip("'")
         return [r for r in self._rows_to_dicts(self._ws(SH_ENTRIES))
-                if str(r["telegram_id"]) == str(telegram_id) and r["date"] == date]
+                if str(r["telegram_id"]) == str(telegram_id)
+                and str(r["date"]).strip().lstrip("'") == clean]
 
     def get_entry_by_row(self, row_id):
         ws = self._ws(SH_ENTRIES)
@@ -224,17 +221,15 @@ class SheetsManager:
             rows_to_update = [row_id]
         else:
             rows_to_update = [r["row_id"] for r in self._rows_to_dicts(ws)
-                              if str(r["telegram_id"]) == str(telegram_id) and r["date"] == date]
+                              if str(r["telegram_id"]) == str(telegram_id)
+                              and str(r["date"]).strip().lstrip("'") == str(date).strip().lstrip("'")]
         for rid in rows_to_update:
             ws.update_cell(rid, headers.index("universal") + 1, round(universal, 2))
             ws.update_cell(rid, headers.index("bonus") + 1, round(bonus, 2))
             self._recalc_row(ws, rid, headers)
         return bool(rows_to_update)
 
-    # ── Admin: редагування будь-якого запису ──────────────────────────────────
-
     def get_worker_all_entries(self, telegram_id):
-        """Всі записи працівника без обмеження місяця (для адміна)."""
         result = []
         for r in self._rows_to_dicts(self._ws(SH_ENTRIES)):
             if str(r["telegram_id"]) == str(telegram_id):
@@ -268,8 +263,10 @@ class SheetsManager:
         return result
 
     def get_day_entries(self, location, date):
+        clean = str(date).strip().lstrip("'")
         return [r for r in self._rows_to_dicts(self._ws(SH_ENTRIES))
-                if r.get("location") == location and r.get("date") == date]
+                if r.get("location") == location
+                and str(r.get("date", "")).strip().lstrip("'") == clean]
 
     def summarize_workers(self, entries):
         s = {}
