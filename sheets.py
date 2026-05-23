@@ -55,7 +55,7 @@ class SheetsManager:
         return self.ss.worksheet(name)
 
     def _parse_date(self, d):
-        return datetime.strptime(d, "%d.%m.%Y")
+    return datetime.strptime(str(d).strip().lstrip("'"), "%d.%m.%Y")
 
     def _rows_to_dicts(self, ws):
         """Повертає всі рядки як словники з row_id."""
