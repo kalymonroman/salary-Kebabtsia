@@ -1,19 +1,22 @@
 """
-Хендлери для адміна закладу, головного адміна
+Хендлери для адміна закладу та головного адміна
 """
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from telegram.ext import (
-    ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes
+    ConversationHandler, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes
 )
 from sheets import SheetsManager
 from calc import LOCATIONS, UNIVERSAL_BONUS, DAILY_BONUS
 
 db = SheetsManager()
 
-(AW_NAME, AW_ID, AW_CONFIRM) = range(40, 43)
-(RW_SEARCH, RW_SELECT, RW_CONFIRM) = range(50, 53)
+AW_NAME, AW_ID, AW_CONFIRM = range(40, 43)
+RW_SEARCH, RW_SELECT, RW_CONFIRM = range(50, 53)
 
 MONTHS_UA = [
     "", "січень", "лютий", "березень", "квітень", "травень", "червень",
@@ -26,196 +29,269 @@ def _now():
 
 
 def _fmt(val):
-    return f"{float(val):,.0f}".replace(",", " ")
+    try:
+        return f"{float(val):,.0f}".replace(",", " ")
+    except (ValueError, TypeError):
+        return "0"
 
 
-def _check_admin(tid):
-    return db.is_admin_or_above(tid)
-
-
-def _get_location_for(tid):
-    r = db.get_role(tid)
-    if r and r["role"] == "location_admin":
-        return r.get("location", "")
-    return None
+def _get_locations_for(tid):
+    """
+    Повертає список закладів адміна.
+    - location_admin з одним закладом  → ["Валова"]
+    - location_admin з двома           → ["Валова", "Spartak"]
+    - owner/superadmin                 → [] (всі заклади)
+    - не адмін                         → None
+    """
+    if not db.is_admin_or_above(tid):
+        return None
+    return db.get_admin_locations(tid)
 
 
 # ── /day ──────────────────────────────────────────────────────────────────────
 
 async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
-    if not _check_admin(tid):
+    locations_for_admin = _get_locations_for(tid)
+
+    if locations_for_admin is None:
         await update.message.reply_text("⛔ Немає доступу.")
         return
 
     args = context.args
     today = _now().strftime("%d.%m.%Y")
-    date = args[0] if args else today
+    date_arg = None
+    loc_arg = None
+
+    if args:
+        if "." in args[0]:
+            date_arg = args[0]
+            if len(args) >= 2:
+                loc_arg = " ".join(args[1:])
+        else:
+            loc_arg = " ".join(args)
+
+    date = date_arg or today
     parts = date.split(".")
     if len(parts) == 2:
         date = f"{parts[0].zfill(2)}.{parts[1].zfill(2)}.{_now().year}"
 
-    loc_filter = _get_location_for(tid)
+    # owner/superadmin: locations_for_admin == [] → доступ до всіх
+    is_superadmin = (not locations_for_admin) and db.is_admin_or_above(tid)
 
-    if loc_filter:
-        entries = db.get_day_entries(loc_filter, date)
-        loc_label = loc_filter
+    if loc_arg:
+        # Заклад вказано явно
+        target_location = loc_arg
+    elif locations_for_admin and len(locations_for_admin) == 1:
+        # location_admin з одним закладом — відразу
+        target_location = locations_for_admin[0]
+    elif locations_for_admin and len(locations_for_admin) > 1:
+        # location_admin з кількома закладами — меню вибору
+        kb = ReplyKeyboardMarkup(
+            [[f"/day {date} {loc}"] for loc in locations_for_admin],
+            resize_keyboard=True, one_time_keyboard=True
+        )
+        await update.message.reply_text(
+            f"📅 {date}\n🏪 У якому закладі переглянути записи?",
+            reply_markup=kb
+        )
+        return
+    elif is_superadmin:
+        # superadmin/owner — показує всі локації
+        kb = ReplyKeyboardMarkup(
+            [[f"/day {date} {loc}"] for loc in LOCATIONS],
+            resize_keyboard=True, one_time_keyboard=True
+        )
+        await update.message.reply_text(
+            f"📅 {date}\n🏪 Оберіть заклад:",
+            reply_markup=kb
+        )
+        return
     else:
-        if len(args) >= 2:
-            loc_filter = " ".join(args[1:])
-            entries = db.get_day_entries(loc_filter, date)
-            loc_label = loc_filter
-        else:
-            kb = ReplyKeyboardMarkup(
-                [[f"/day {date} {loc}"] for loc in LOCATIONS],
-                resize_keyboard=True, one_time_keyboard=True
-            )
-            await update.message.reply_text(f"📅 {date}\nОберіть заклад:", reply_markup=kb)
-            return
-
-    if not entries:
-        await update.message.reply_text(f"📅 {date} — {loc_label}\n📭 Записів немає.")
+        await update.message.reply_text(
+            "Не вдалось визначити заклад.\nСпробуйте: /day 21.05 Валова",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
 
-    lines = [f"📅 *{date}* — {loc_label}\nПрацівників: {len(entries)}\n"]
-    buttons = []
+    entries = db.get_day_entries(target_location, date)
 
-    for r in entries:
-        name = r["name"]
-        tid_w = str(r["telegram_id"])
-        row_id = str(r.get("row_id", 0))
-        univ = float(r.get("universal", 0)) > 0
-        bonus = float(r.get("bonus", 0)) > 0
-        u_icon = "✅" if univ else "⬜"
-        b_icon = "✅" if bonus else "⬜"
-        lines.append(
-            f"👤 {name}\n"
-            f"  ⏱ {r['hours']}г | {_fmt(r['base_pay'])} грн\n"
-            f"  🔧 Унів {u_icon}  |  ⭐ Премія {b_icon}"
+    if not entries:
+        await update.message.reply_text(
+            f"📅 {date} — {target_location}\n📭 Записів немає.",
+            reply_markup=ReplyKeyboardRemove()
         )
-        buttons.append([
+        return
+
+    text = f"📅 {date} — {target_location}\n\n"
+    keyboard = []
+
+    for e in entries:
+        univ = float(e.get("universal", 0) or 0)
+        bonus = float(e.get("bonus", 0) or 0)
+        total = float(e.get("total", 0) or 0)
+        row_id = e.get("row_id", 0)
+        tid_w = e.get("telegram_id", "")
+
+        univ_icon  = "🔧✅" if univ > 0 else "🔧⬜"
+        bonus_icon = "⭐✅" if bonus > 0 else "⭐⬜"
+
+        text += f"👤 {e['name']} — {_fmt(total)} грн\n"
+        keyboard.append([
             InlineKeyboardButton(
-                f"{'🔧✅' if univ else '🔧⬜'} {name[:12]}",
-                callback_data=f"univ:{tid_w}:{date}:{int(not univ)}:{row_id}"
+                f"{univ_icon} {e['name']}",
+                callback_data=f"univ:{tid_w}:{date}:{0 if univ > 0 else 1}:{row_id}"
             ),
             InlineKeyboardButton(
-                f"{'⭐✅' if bonus else '⭐⬜'}",
-                callback_data=f"bonus:{tid_w}:{date}:{int(not bonus)}:{row_id}"
+                bonus_icon,
+                callback_data=f"bonus:{tid_w}:{date}:{0 if bonus > 0 else 1}:{row_id}"
             ),
         ])
 
-    lines.append(f"\nНатисніть кнопку щоб перемкнути унів/премію:")
     await update.message.reply_text(
-        "\n".join(lines),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+
+# ── toggle callback ───────────────────────────────────────────────────────────
 
 async def toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     tid_admin = query.from_user.id
-    if not _check_admin(tid_admin):
+    if not db.is_admin_or_above(tid_admin):
         await query.answer("⛔ Немає доступу", show_alert=True)
         return
 
     parts = query.data.split(":")
-    action = parts[0]
-    tid_w = parts[1]
-    date = parts[2]
-    val = int(parts[3])
-    row_id = int(parts[4]) if len(parts) > 4 else None
+    if len(parts) < 5:
+        await query.answer("Помилка даних", show_alert=True)
+        return
 
-    entry = db.get_entry_by_row(row_id) if row_id else None
+    action  = parts[0]
+    tid_w   = parts[1]
+    date    = parts[2]
+    val     = int(parts[3])
+    row_id  = int(parts[4])
+
+    entry = db.get_entry_by_row(row_id)
     if not entry:
         await query.answer("Запис не знайдено", show_alert=True)
         return
 
-    current_univ = float(entry.get("universal", 0))
-    current_bonus = float(entry.get("bonus", 0))
+    current_univ  = float(entry.get("universal", 0) or 0)
+    current_bonus = float(entry.get("bonus", 0) or 0)
 
     if action == "univ":
-        new_univ = UNIVERSAL_BONUS if val else 0
+        new_univ = float(UNIVERSAL_BONUS) if val else 0.0
         db.set_universal_bonus(int(tid_w), date, new_univ, current_bonus, row_id=row_id)
-        await query.answer(f"🔧 Універсал {'нараховано' if val else 'знято'}")
+        await query.answer(f"🔧 Університал {'нараховано' if val else 'знято'}")
     else:
-        new_bonus = DAILY_BONUS if val else 0
+        new_bonus = float(DAILY_BONUS) if val else 0.0
         db.set_universal_bonus(int(tid_w), date, current_univ, new_bonus, row_id=row_id)
         await query.answer(f"⭐ Премія {'нарахована' if val else 'знята'}")
 
+    # Оновлюємо кнопки
     keyboard = query.message.reply_markup.inline_keyboard
     new_keyboard = []
     for row in keyboard:
         new_row = []
         for btn in row:
             if btn.callback_data == query.data:
+                new_val = int(not val)
                 if action == "univ":
+                    icon = "🔧✅" if val else "🔧⬜"
                     name_part = btn.text.split(" ", 1)[1] if " " in btn.text else ""
-                    new_text = f"{'🔧✅' if val else '🔧⬜'} {name_part}"
+                    new_text = f"{icon} {name_part}"
                 else:
-                    new_text = f"{'⭐✅' if val else '⭐⬜'}"
+                    new_text = "⭐✅" if val else "⭐⬜"
                 new_row.append(InlineKeyboardButton(
                     new_text,
-                    callback_data=f"{action}:{tid_w}:{date}:{int(not val)}:{row_id}"
+                    callback_data=f"{action}:{tid_w}:{date}:{new_val}:{row_id}"
                 ))
             else:
                 new_row.append(btn)
         new_keyboard.append(new_row)
-    await query.edit_message_reply_markup(InlineKeyboardMarkup(new_keyboard))
+
+    try:
+        await query.edit_message_reply_markup(InlineKeyboardMarkup(new_keyboard))
+    except Exception:
+        pass
 
 
 # ── /stats ────────────────────────────────────────────────────────────────────
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
-    if not _check_admin(tid):
+    if not db.is_admin_or_above(tid):
         await update.message.reply_text("⛔ Немає доступу.")
         return
 
     now = _now()
     args = context.args
-    loc_filter = _get_location_for(tid)
 
-    if not loc_filter:
-        if args:
-            loc_filter = " ".join(args)
-        else:
-            kb = [[f"/stats {loc}"] for loc in LOCATIONS]
-            await update.message.reply_text(
-                "Оберіть заклад:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
-            )
-            return
+    # Визначаємо заклад
+    locations_for_admin = _get_locations_for(tid)
+    is_superadmin = not locations_for_admin and db.is_admin_or_above(tid)
 
-    entries = db.get_location_entries(loc_filter, now.month, now.year)
+    if args:
+        location = " ".join(args)
+    elif locations_for_admin and len(locations_for_admin) == 1:
+        location = locations_for_admin[0]
+    elif locations_for_admin and len(locations_for_admin) > 1:
+        locs_str = "\n".join(f"  /stats {loc}" for loc in locations_for_admin)
+        await update.message.reply_text(
+            f"🏪 У вас кілька закладів. Вкажіть який:\n{locs_str}"
+        )
+        return
+    elif is_superadmin and not args:
+        await update.message.reply_text(
+            "Вкажіть заклад: /stats Валова\nАбо /report для зведеного звіту по всіх."
+        )
+        return
+    else:
+        await update.message.reply_text("Вкажіть заклад: /stats Валова")
+        return
+
+    entries = db.get_location_entries(location, now.month, now.year)
     if not entries:
-        await update.message.reply_text(f"📭 Даних по '{loc_filter}' немає.")
+        await update.message.reply_text(
+            f"📊 {location} — {MONTHS_UA[now.month]} {now.year}\n📭 Записів немає."
+        )
         return
 
     summary = db.summarize_workers(entries)
-    total_base = sum(s["base_pay"] for s in summary.values())
-    total_rate_b = sum(s["rate_bonus"] for s in summary.values())
-    total_univ = sum(s["universal"] for s in summary.values())
-    total_bonus = sum(s["bonus"] for s in summary.values())
-    grand = sum(s["total"] for s in summary.values())
+    month_label = f"{MONTHS_UA[now.month]} {now.year}"
+    lines = [f"📊 {location} — {month_label}\n"]
 
-    lines = [
-        f"📊 *{loc_filter}* — {MONTHS_UA[now.month]} {now.year}\n",
-        f"1. Погодинна база (110 грн/год): {_fmt(total_base)} грн",
-        f"2. Бонус від каси: {_fmt(total_rate_b)} грн",
-        f"3. Надбавка унів.: {_fmt(total_univ)} грн",
-        f"4. Премії: {_fmt(total_bonus)} грн",
-        f"─────────────────",
-        f"💵 Разом: *{_fmt(grand)} грн*\n",
-        f"Прац.: {len(summary)} | Год.: {sum(s['hours'] for s in summary.values()):.1f}\n",
-        "По працівниках:"
-    ]
-    for s in sorted(summary.values(), key=lambda x: x["name"]):
+    total_hours = total_base = total_rb = total_univ = total_bonus = total_all = 0.0
+
+    for tid_w, s in summary.items():
         lines.append(
-            f"  👤 {s['name']}: {s['days']}дн | {s['hours']}г | *{_fmt(s['total'])} грн*"
+            f"👤 {s['name']}  ({s['days']} зм / {s['hours']:.1f} год)\n"
+            f"   База: {_fmt(s['base_pay'])} грн\n"
+            f"   Бонус каси: {_fmt(s['rate_bonus'])} грн\n"
+            f"   Університал: {_fmt(s['universal'])} грн\n"
+            f"   Премія: {_fmt(s['bonus'])} грн\n"
+            f"   ─── Разом: {_fmt(s['total'])} грн\n"
         )
+        total_hours += s["hours"]
+        total_base  += s["base_pay"]
+        total_rb    += s["rate_bonus"]
+        total_univ  += s["universal"]
+        total_bonus += s["bonus"]
+        total_all   += s["total"]
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines.append(
+        f"─────────────────\n"
+        f"Всього: {total_hours:.1f} год\n"
+        f"База: {_fmt(total_base)} | Каса: {_fmt(total_rb)}\n"
+        f"Університал: {_fmt(total_univ)} | Премії: {_fmt(total_bonus)}\n"
+        f"💰 Разом: {_fmt(total_all)} грн"
+    )
+    await update.message.reply_text("\n".join(lines))
 
 
 # ── /report ───────────────────────────────────────────────────────────────────
@@ -229,112 +305,90 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = _now()
     entries = db.get_all_entries(now.month, now.year)
     if not entries:
-        await update.message.reply_text("📭 Даних за цей місяць немає.")
+        await update.message.reply_text(
+            f"📋 {MONTHS_UA[now.month]} {now.year}\n📭 Записів немає."
+        )
         return
 
-    by_loc = db.summarize_locations(entries)
-    grand = {"base_pay": 0, "rate_bonus": 0, "universal": 0, "bonus": 0, "total": 0}
+    loc_summary = db.summarize_locations(entries)
+    month_label = f"{MONTHS_UA[now.month]} {now.year}"
+    lines = [f"📋 Зведений звіт — {month_label}\n"]
 
-    lines = [f"📊 *Мережа* — {MONTHS_UA[now.month]} {now.year}\n"]
-    for loc in LOCATIONS:
-        if loc not in by_loc:
-            continue
-        s = by_loc[loc]
-        for k in grand:
-            grand[k] += s[k]
+    grand_total = 0.0
+    for loc in sorted(loc_summary):
+        s = loc_summary[loc]
         lines.append(
-            f"📍 *{loc}*\n"
-            f"  Прац.: {s['worker_count']} | Год.: {s['hours']:.1f}\n"
-            f"  База: {_fmt(s['base_pay'])} | Бонус каси: {_fmt(s['rate_bonus'])}\n"
-            f"  Унів.: +{_fmt(s['universal'])} | Премії: +{_fmt(s['bonus'])}\n"
-            f"  💵 {_fmt(s['total'])} грн"
+            f"🏪 {loc}  ({s['days']} зм / {s['hours']:.1f} год)\n"
+            f"   База: {_fmt(s['base_pay'])} | Каса: {_fmt(s['rate_bonus'])}\n"
+            f"   Університал: {_fmt(s['universal'])} | Премії: {_fmt(s['bonus'])}\n"
+            f"   Разом: {_fmt(s['total'])} грн\n"
         )
+        grand_total += s["total"]
 
-    lines += [
-        f"\n─────────────────",
-        f"1. Погодинна база: {_fmt(grand['base_pay'])} грн",
-        f"2. Бонус від каси: {_fmt(grand['rate_bonus'])} грн",
-        f"3. Унів.: +{_fmt(grand['universal'])} грн",
-        f"4. Премії: +{_fmt(grand['bonus'])} грн",
-        f"💵 *Разом: {_fmt(grand['total'])} грн*",
-    ]
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines.append(f"─────────────────\n💰 Загалом по мережі: {_fmt(grand_total)} грн")
+    await update.message.reply_text("\n".join(lines))
 
+
+# ── /worker_report ────────────────────────────────────────────────────────────
 
 async def worker_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
-    if not db.is_superadmin_or_above(tid):
+    if not db.is_admin_or_above(tid):
         await update.message.reply_text("⛔ Немає доступу.")
         return
-    args = context.args
-    if not args:
-        await update.message.reply_text("Використання: /worker_report Ім'я")
+
+    if not context.args:
+        await update.message.reply_text("Вкажіть ім'я: /worker_report Роман")
         return
-    query = " ".join(args)
+
+    query = " ".join(context.args)
     workers = db.search_workers(query)
     if not workers:
-        await update.message.reply_text(f"Не знайдено працівника '{query}'")
+        await update.message.reply_text(f"❌ Не знайдено: {query}")
         return
 
+    worker = workers[0]
     now = _now()
-    lines = []
-    for w in workers:
-        tid_w = int(w["telegram_id"])
-        entries = db.get_worker_entries(tid_w, now.month, now.year)
-        if not entries:
-            continue
-        by_loc = {}
-        for e in entries:
-            loc = e.get("location", "?")
-            if loc not in by_loc:
-                by_loc[loc] = []
-            by_loc[loc].append(e)
+    entries = db.get_worker_entries(worker["telegram_id"], now.month, now.year)
 
-        total = sum(float(e["total"]) for e in entries)
-        hours = sum(float(e["hours"]) for e in entries)
-        base = sum(float(e["base_pay"]) for e in entries)
-        rate_b = sum(float(e.get("rate_bonus", 0)) for e in entries)
-        univ = sum(float(e.get("universal", 0)) for e in entries)
-        bonus = sum(float(e.get("bonus", 0)) for e in entries)
-
-        lines.append(f"👤 *{w['name']}* — {MONTHS_UA[now.month]} {now.year}")
-        lines.append(f"Днів: {len(entries)} | Год.: {hours:.1f}")
-        lines.append(f"1. Погодинна база: {_fmt(base)} грн")
-        lines.append(f"2. Бонус від каси: {_fmt(rate_b)} грн")
-        lines.append(f"3. Унів.: +{_fmt(univ)} грн")
-        lines.append(f"4. Премії: +{_fmt(bonus)} грн")
-        lines.append(f"💵 *Разом: {_fmt(total)} грн*\n")
-        lines.append("По локаціях:")
-        for loc, es in by_loc.items():
-            loc_total = sum(float(e["total"]) for e in es)
-            lines.append(f"  📍 {loc}: {len(es)}дн | {_fmt(loc_total)} грн")
-        lines.append("\nДеталі по днях:")
-        for e in entries:
-            lines.append(
-                f"  {e['date']} | {e['location']} | {e['hours']}г | {_fmt(e['total'])}₴"
-            )
-
-    if not lines:
-        await update.message.reply_text(f"📭 Даних за {MONTHS_UA[now.month]} немає.")
+    if not entries:
+        await update.message.reply_text(
+            f"👤 {worker['name']}\n📭 Записів за {MONTHS_UA[now.month]} немає."
+        )
         return
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    lines = [f"👤 {worker['name']} — {MONTHS_UA[now.month]} {now.year}\n"]
+    total = 0.0
+    for e in entries:
+        lines.append(
+            f"📅 {e['date']}  {e.get('location','')}  {e.get('hours',0)} год\n"
+            f"   {_fmt(e.get('base_pay',0))} + {_fmt(e.get('rate_bonus',0))} "
+            f"+ {_fmt(e.get('universal',0))} + {_fmt(e.get('bonus',0))} "
+            f"= {_fmt(e.get('total',0))} грн"
+        )
+        total += float(e.get("total", 0) or 0)
+
+    lines.append(f"\n💰 Разом: {_fmt(total)} грн")
+    await update.message.reply_text("\n".join(lines))
 
 
 # ── /workers ──────────────────────────────────────────────────────────────────
 
 async def list_workers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
-    if not db.can_manage_workers(tid):
+    if not db.is_admin_or_above(tid):
         await update.message.reply_text("⛔ Немає доступу.")
         return
+
     workers = db.get_all_workers()
     if not workers:
         await update.message.reply_text("📭 Список порожній.")
         return
-    lines = ["👥 *Список працівників:*\n"]
-    for i, w in enumerate(workers, 1):
-        lines.append(f"{i}. {w['name']} (ID: {w['telegram_id']})")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    lines = [f"👥 Працівників: {len(workers)}\n"]
+    for w in workers:
+        lines.append(f"• {w['name']} (ID: {w['telegram_id']})")
+    await update.message.reply_text("\n".join(lines))
 
 
 # ── /add_worker ───────────────────────────────────────────────────────────────
@@ -345,7 +399,8 @@ async def add_worker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Немає доступу.")
         return ConversationHandler.END
     await update.message.reply_text(
-        "Введіть ім'я нового працівника:", reply_markup=ReplyKeyboardRemove()
+        "Введіть ім'я нового працівника:",
+        reply_markup=ReplyKeyboardRemove()
     )
     return AW_NAME
 
@@ -353,51 +408,44 @@ async def add_worker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["aw_name"] = update.message.text.strip()
     await update.message.reply_text(
-        "Введіть Telegram ID працівника.\n\n"
-        "_Попросіть написати @userinfobot — він покаже ID_",
-        parse_mode="Markdown"
+        f"Ім'я: {context.user_data['aw_name']}\n"
+        "Введіть Telegram ID працівника (числовий, дізнатись через @userinfobot):"
     )
     return AW_ID
 
 
 async def add_worker_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        new_id = int(update.message.text.strip())
+        tid_new = int(update.message.text.strip())
     except ValueError:
         await update.message.reply_text("❌ ID має бути числом. Спробуйте ще раз:")
         return AW_ID
-    if db.get_worker(new_id):
-        await update.message.reply_text("⚠️ Такий ID вже є в системі.")
-        return ConversationHandler.END
-    context.user_data["aw_id"] = new_id
-    await update.message.reply_text(
-        f"Додати працівника?\n\n"
-        f"👤 {context.user_data['aw_name']}\n"
-        f"🆔 {new_id}",
-        reply_markup=ReplyKeyboardMarkup(
-            [["✅ Так, додати"], ["❌ Скасувати"]],
-            resize_keyboard=True, one_time_keyboard=True
+
+    existing = db.get_worker(tid_new)
+    if existing:
+        await update.message.reply_text(
+            f"⚠️ Працівник з ID {tid_new} вже існує: {existing['name']}",
+            reply_markup=ReplyKeyboardRemove()
         )
+        return ConversationHandler.END
+
+    context.user_data["aw_id"] = tid_new
+    kb = ReplyKeyboardMarkup([["✅ Так, додати", "❌ Скасувати"]],
+                             resize_keyboard=True, one_time_keyboard=True)
+    await update.message.reply_text(
+        f"Додати працівника?\n👤 {context.user_data['aw_name']} (ID: {tid_new})",
+        reply_markup=kb
     )
     return AW_CONFIRM
 
 
 async def add_worker_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "Так" in update.message.text:
-        name = context.user_data["aw_name"]
-        new_id = context.user_data["aw_id"]
-        db.add_worker(new_id, name)
+        db.add_worker(context.user_data["aw_id"], context.user_data["aw_name"])
         await update.message.reply_text(
-            f"✅ {name} доданий до системи.",
+            f"✅ {context.user_data['aw_name']} доданий.",
             reply_markup=ReplyKeyboardRemove()
         )
-        try:
-            await context.bot.send_message(
-                chat_id=new_id,
-                text=f"👋 Вас додано до системи обліку зарплати!\n\nНатисніть /start щоб розпочати."
-            )
-        except Exception:
-            pass
     else:
         await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
@@ -411,50 +459,59 @@ async def remove_worker_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("⛔ Немає доступу.")
         return ConversationHandler.END
     await update.message.reply_text(
-        "Введіть ім'я або частину імені працівника:",
+        "Введіть ім'я або ID працівника для видалення:",
         reply_markup=ReplyKeyboardRemove()
     )
     return RW_SEARCH
 
 
 async def remove_worker_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    results = db.search_workers(update.message.text.strip())
+    text = update.message.text.strip()
+    try:
+        results = [db.get_worker(int(text))]
+        results = [r for r in results if r]
+    except ValueError:
+        results = db.search_workers(text)
+
     if not results:
-        await update.message.reply_text("❌ Нікого не знайдено. Спробуйте ще раз:")
+        await update.message.reply_text("❌ Не знайдено. Спробуйте ще раз:")
         return RW_SEARCH
+
     if len(results) == 1:
         context.user_data["rw_worker"] = results[0]
-        return await _ask_remove_confirm(update, context)
+        kb = ReplyKeyboardMarkup([["✅ Так, видалити", "❌ Скасувати"]],
+                                 resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text(
+            f"Видалити доступ?\n👤 {results[0]['name']} (ID: {results[0]['telegram_id']})",
+            reply_markup=kb
+        )
+        return RW_CONFIRM
+
     context.user_data["rw_results"] = results
-    lines = ["Знайдено кілька:\n"]
-    for i, w in enumerate(results, 1):
-        lines.append(f"{i}. {w['name']}")
-    lines.append("\nВведіть номер:")
-    await update.message.reply_text("\n".join(lines))
+    kb = ReplyKeyboardMarkup(
+        [[f"{i}. {r['name']}"] for i, r in enumerate(results, 1)],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    await update.message.reply_text("Знайдено кілька — оберіть:", reply_markup=kb)
     return RW_SELECT
 
 
 async def remove_worker_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    results = context.user_data.get("rw_results", [])
     try:
-        idx = int(update.message.text.strip()) - 1
-        worker = context.user_data["rw_results"][idx]
+        idx = int(text.split(".")[0]) - 1
+        context.user_data["rw_worker"] = results[idx]
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ Введіть коректний номер:")
+        await update.message.reply_text("❌ Оберіть зі списку:")
         return RW_SELECT
-    context.user_data["rw_worker"] = worker
-    return await _ask_remove_confirm(update, context)
 
-
-async def _ask_remove_confirm(update, context):
+    kb = ReplyKeyboardMarkup([["✅ Так, видалити", "❌ Скасувати"]],
+                             resize_keyboard=True, one_time_keyboard=True)
     w = context.user_data["rw_worker"]
     await update.message.reply_text(
-        f"Видалити доступ?\n\n"
-        f"👤 {w['name']}\n\n"
-        f"⚠️ Всі записи залишаться в таблиці.",
-        reply_markup=ReplyKeyboardMarkup(
-            [["🗑 Так, видалити доступ"], ["❌ Скасувати"]],
-            resize_keyboard=True, one_time_keyboard=True
-        )
+        f"Видалити доступ?\n👤 {w['name']} (ID: {w['telegram_id']})",
+        reply_markup=kb
     )
     return RW_CONFIRM
 
@@ -462,9 +519,9 @@ async def _ask_remove_confirm(update, context):
 async def remove_worker_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "Так" in update.message.text:
         w = context.user_data["rw_worker"]
-        db.remove_worker(int(w["telegram_id"]))
+        db.remove_worker(w["telegram_id"])
         await update.message.reply_text(
-            f"✅ Доступ {w['name']} видалено. Дані збережено в таблиці.",
+            f"✅ Доступ {w['name']} видалено.",
             reply_markup=ReplyKeyboardRemove()
         )
     else:
@@ -483,8 +540,8 @@ def add_worker_conv():
     return ConversationHandler(
         entry_points=[CommandHandler("add_worker", add_worker_start)],
         states={
-            AW_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_name)],
-            AW_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_id)],
+            AW_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_name)],
+            AW_ID:      [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_id)],
             AW_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_confirm)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -495,8 +552,8 @@ def remove_worker_conv():
     return ConversationHandler(
         entry_points=[CommandHandler("remove_worker", remove_worker_start)],
         states={
-            RW_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_search)],
-            RW_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_select)],
+            RW_SEARCH:  [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_search)],
+            RW_SELECT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_select)],
             RW_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_confirm)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
