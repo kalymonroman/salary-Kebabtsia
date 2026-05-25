@@ -15,35 +15,45 @@ UNIVERSAL_BONUS = 150
 DAILY_BONUS = 200
 RATE1_BASE = 110
 RATE15_BASE = 130
+RATE15_MIN_REVENUE = 40000
 
+# Бонус від каси: (мінімальний виторг, бонус ставка 1, бонус ставка 1.5)
 BONUS_TIERS = [
-    (95000, 40),
-    (85000, 35),
-    (70000, 30),
-    (55000, 25),
-    (45000, 20),
-    (40000, 15),
-    (30000, 10),
-    (0,      0),
+    (95000, 40, 60),
+    (85000, 35, 55),
+    (70000, 30, 50),
+    (55000, 25, 45),
+    (45000, 20, 40),
+    (40000, 15, 35),
+    (30000, 10, 10),
+    (0,      0,  0),
 ]
 
 
-def get_revenue_bonus(revenue: float) -> int:
-    for threshold, bonus in BONUS_TIERS:
+def get_revenue_bonus(rate: float, revenue: float) -> int:
+    """Бонус від каси залежно від виторгу і ставки."""
+    for threshold, bonus1, bonus15 in BONUS_TIERS:
         if revenue >= threshold:
-            return bonus
+            return bonus15 if rate == 1.5 else bonus1
     return 0
 
 
+def get_base_hourly(rate: float, revenue: float) -> int:
+    """База: 130 грн/год лише для ставки 1.5 при виторгу >= 40 000, інакше 110."""
+    if rate == 1.5 and revenue >= RATE15_MIN_REVENUE:
+        return RATE15_BASE
+    return RATE1_BASE
+
+
 def get_hourly_rate(rate: float, revenue: float) -> int:
-    base = RATE15_BASE if rate == 1.5 else RATE1_BASE
-    return base + get_revenue_bonus(revenue)
+    """Повна погодинна ставка = база + бонус від каси."""
+    return get_base_hourly(rate, revenue) + get_revenue_bonus(rate, revenue)
 
 
 def calculate(hours: float, rate: float, revenue: float,
               universal: bool = False, bonus: bool = False) -> dict:
-    base_hourly = RATE15_BASE if rate == 1.5 else RATE1_BASE
-    rev_bonus = get_revenue_bonus(revenue)
+    base_hourly = get_base_hourly(rate, revenue)
+    rev_bonus = get_revenue_bonus(rate, revenue)
     hourly = base_hourly + rev_bonus
 
     base_pay = hours * base_hourly
@@ -80,7 +90,9 @@ def format_result(calc: dict, date: str, location: str,
         f"  База ({base_h} × {hours} год): {calc['base_pay']:,.0f} грн",
     ]
     if rev_bonus > 0:
-        lines.append(f"  Бонус від каси (+{rev_bonus} × {hours} год): +{calc['rate_bonus']:,.0f} грн")
+        lines.append(
+            f"  Бонус від каси (+{rev_bonus} × {hours} год): +{calc['rate_bonus']:,.0f} грн"
+        )
     if calc["universal"]:
         lines.append(f"  Універсал: +{calc['universal']:,.0f} грн")
     if calc["bonus"]:
