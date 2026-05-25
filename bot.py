@@ -1,10 +1,9 @@
 import logging
 import os
-import threading
+import subprocess
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-
 from handlers.worker import (
     start, fill_conv, edit_conv, add_day_conv, del_day_conv, my_records
 )
@@ -22,20 +21,23 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-
 def run_webapp():
-    from webapp import app
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
+    subprocess.Popen([
+        "gunicorn", "webapp:app",
+        "--bind", f"0.0.0.0:{port}",
+        "--workers", "1",
+        "--timeout", "120",
+        "--log-level", "info"
+    ])
+    logging.info(f"Веб-панель запущено на порті {port}")
 
 def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise ValueError("BOT_TOKEN не знайдено")
 
-    threading.Thread(target=run_webapp, daemon=True).start()
-    logging.info("Веб-панель запущено")
+    run_webapp()
 
     application = Application.builder().token(token).build()
 
@@ -60,7 +62,6 @@ def main():
 
     logging.info("Бот запущено...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
