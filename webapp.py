@@ -30,8 +30,14 @@ def get_entries_for_user(db, tid, loc, m, y):
         return None, None
     if role["role"] == "location_admin":
         locs = db.get_admin_locations(tid)
-        loc = locs[0] if locs else ""
-        entries = db.get_location_entries(loc, m, y)
+        if not locs:
+            return role, []
+        if loc and loc in locs:
+            entries = db.get_location_entries(loc, m, y)
+        else:
+            entries = []
+            for l in locs:
+                entries.extend(db.get_location_entries(l, m, y))
     elif loc:
         entries = db.get_location_entries(loc, m, y)
     else:
@@ -139,7 +145,7 @@ function login(){
     <select id="sel-month" onchange="loadAll()">
       {% for m in months %}<option value="{{ m.val }}" {% if m.active %}selected{% endif %}>{{ m.label }}</option>{% endfor %}
     </select>
-    {% if is_superadmin %}
+    {% if show_loc_selector %}
     <select id="sel-loc" onchange="loadAll()">
       <option value="">Всі заклади</option>
       {% for loc in locations %}<option value="{{ loc }}">{{ loc }}</option>{% endfor %}
@@ -214,12 +220,12 @@ function login(){
 <script>
 let allData=[], statsData=null;
 let changed={}, sortKey='date', sortAsc=true, filterMode='all', statsTab='loc';
-const IS_SUPERADMIN={{ 'true' if is_superadmin else 'false' }};
+const SHOW_LOC_SELECTOR={{ 'true' if show_loc_selector else 'false' }};
 const USER_LOC='{{ user_location }}';
 
 function getParams(){
   const month=document.getElementById('sel-month').value;
-  const loc=IS_SUPERADMIN?(document.getElementById('sel-loc')?.value||''):USER_LOC;
+  const loc=SHOW_LOC_SELECTOR?(document.getElementById('sel-loc')?.value||''):USER_LOC;
   return {month,loc};
 }
 
@@ -238,12 +244,11 @@ function buildStats(data){
   data.forEach(e=>{
     const l=e.location||'?';
     const wKey=String(e.telegram_id);
-    const rate=parseFloat(e.rate)||1;
-    const hours=parseFloat(e.hours)||0;
     const base=parseFloat(e.base_pay)||0;
     const bonusV=parseFloat(e.rate_bonus)||0;
     const univV=parseFloat(e.universal)||0;
     const premV=parseFloat(e.bonus)||0;
+    const hours=parseFloat(e.hours)||0;
     const tot=base+bonusV+univV+premV;
 
     if(!byLoc[l]) byLoc[l]={name:l,workers:new Set(),count:0,hours:0,base:0,bonus:0,univ:0,premium:0,total:0};
@@ -440,7 +445,8 @@ def get_months():
 @app.route("/")
 def index():
     if not session.get("logged_in"):
-        return render_template_string(HTML, logged_in=False, locations=[], months=[])
+        return render_template_string(HTML, logged_in=False, locations=[], months=[],
+                                      show_loc_selector=False, user_location="")
     from calc import LOCATIONS
     db = get_db()
     role = db.get_role(session["telegram_id"])
@@ -448,11 +454,15 @@ def index():
                 "location_admin": "Адмін закладу", "worker": "Працівник"}
     role_name = role_map.get(role["role"], "") if role else ""
     is_superadmin = role and role["role"] in ("owner", "superadmin")
-    locs = db.get_admin_locations(session["telegram_id"]) if not is_superadmin else []
-    user_location = locs[0] if locs else ""
+    admin_locs = db.get_admin_locations(session["telegram_id"]) if not is_superadmin else []
+    is_multi_loc = len(admin_locs) > 1
+    show_loc_selector = is_superadmin or is_multi_loc
+    locations = LOCATIONS if is_superadmin else admin_locs
+    user_location = admin_locs[0] if len(admin_locs) == 1 else ""
     return render_template_string(
-        HTML, logged_in=True, locations=LOCATIONS, months=get_months(),
-        role_name=role_name, is_superadmin=is_superadmin, user_location=user_location,
+        HTML, logged_in=True, locations=locations, months=get_months(),
+        role_name=role_name, show_loc_selector=show_loc_selector,
+        user_location=user_location,
     )
 
 
