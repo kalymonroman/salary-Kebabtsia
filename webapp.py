@@ -29,7 +29,8 @@ def get_entries_for_user(db, tid, loc, m, y):
     if not role:
         return None, None
     if role["role"] == "location_admin":
-        loc = db.get_admin_location(tid)
+        locs = db.get_admin_locations(tid)
+        loc = locs[0] if locs else ""
         entries = db.get_location_entries(loc, m, y)
     elif loc:
         entries = db.get_location_entries(loc, m, y)
@@ -160,7 +161,7 @@ function login(){
 <div id="page-table" class="screen active">
   <div class="filter-row">
     <div class="ftab active" onclick="setFilter('all',this)">Всі записи</div>
-    <div class="ftab" onclick="setFilter('no_univ',this)">Без універсала</div>
+    <div class="ftab" onclick="setFilter('no_univ',this)">Без університала</div>
     <div class="ftab" onclick="setFilter('no_bonus',this)">Без премії</div>
     <div class="ftab" onclick="setFilter('changed',this)">Змінені</div>
   </div>
@@ -229,7 +230,6 @@ async function loadAll(){
   changed={};
   updateSaveBar();
   render();
-  // Будуємо статистику з вже завантажених даних
   buildStats(allData);
 }
 
@@ -240,26 +240,25 @@ function buildStats(data){
     const wKey=String(e.telegram_id);
     const rate=parseFloat(e.rate)||1;
     const hours=parseFloat(e.hours)||0;
-    const s1=rate===1?hours*110:0;
-    const s15=rate===1.5?hours*130:0;
+    const base=parseFloat(e.base_pay)||0;
     const bonusV=parseFloat(e.rate_bonus)||0;
     const univV=parseFloat(e.universal)||0;
     const premV=parseFloat(e.bonus)||0;
-    const tot=s1+s15+bonusV+univV+premV;
+    const tot=base+bonusV+univV+premV;
 
-    if(!byLoc[l]) byLoc[l]={name:l,workers:new Set(),count:0,hours:0,s1:0,s15:0,bonus:0,univ:0,premium:0,total:0};
+    if(!byLoc[l]) byLoc[l]={name:l,workers:new Set(),count:0,hours:0,base:0,bonus:0,univ:0,premium:0,total:0};
     byLoc[l].workers.add(wKey);
     byLoc[l].count++;
     byLoc[l].hours+=hours;
-    byLoc[l].s1+=s1; byLoc[l].s15+=s15;
-    byLoc[l].bonus+=bonusV; byLoc[l].univ+=univV; byLoc[l].premium+=premV;
+    byLoc[l].base+=base; byLoc[l].bonus+=bonusV;
+    byLoc[l].univ+=univV; byLoc[l].premium+=premV;
     byLoc[l].total+=tot;
 
-    if(!byWorker[wKey]) byWorker[wKey]={name:e.name,loc:l,count:0,hours:0,s1:0,s15:0,bonus:0,univ:0,premium:0,total:0};
+    if(!byWorker[wKey]) byWorker[wKey]={name:e.name,loc:l,count:0,hours:0,base:0,bonus:0,univ:0,premium:0,total:0};
     byWorker[wKey].count++;
     byWorker[wKey].hours+=hours;
-    byWorker[wKey].s1+=s1; byWorker[wKey].s15+=s15;
-    byWorker[wKey].bonus+=bonusV; byWorker[wKey].univ+=univV; byWorker[wKey].premium+=premV;
+    byWorker[wKey].base+=base; byWorker[wKey].bonus+=bonusV;
+    byWorker[wKey].univ+=univV; byWorker[wKey].premium+=premV;
     byWorker[wKey].total+=tot;
   });
 
@@ -349,9 +348,9 @@ function renderStats(){
   if(!statsData){document.getElementById('stats-content').innerHTML='<div style="color:#6b6f7e;padding:20px">Спочатку завантажте Таблицю</div>';return;}
   const rows=statsTab==='loc'?statsData.by_location:statsData.by_worker;
   if(!rows||!rows.length){document.getElementById('stats-content').innerHTML='<div style="color:#6b6f7e;padding:20px">Немає даних за цей період</div>';return;}
-  const fields=['s1','s15','bonus','univ','premium'];
-  const labels=['1. Ст.1 (110)','2. Ст.1.5 (130)','3. Бонус каси','4. Унів.','5. Премії'];
-  const colT={s1:0,s15:0,bonus:0,univ:0,premium:0,total:0,hours:0};
+  const fields=['base','bonus','univ','premium'];
+  const labels=['База','Бонус каси','Університал','Премії'];
+  const colT={base:0,bonus:0,univ:0,premium:0,total:0,hours:0};
   rows.forEach(r=>{fields.forEach(f=>colT[f]+=(r[f]||0));colT.total+=(r.total||0);colT.hours+=(r.hours||0);});
   const firstCol=statsTab==='loc'?'Заклад':'Працівник';
   document.getElementById('stats-content').innerHTML=`
@@ -382,7 +381,6 @@ function toggle(rowId,field,val){
   if(!changed[rowId])changed[rowId]={};
   changed[rowId][field]=val;
   updateSaveBar();render();
-  // Оновлюємо статистику з урахуванням змін
   const updatedData=allData.map(r=>{
     if(r.row_id!==rowId)return r;
     return {...r,
@@ -450,7 +448,8 @@ def index():
                 "location_admin": "Адмін закладу", "worker": "Працівник"}
     role_name = role_map.get(role["role"], "") if role else ""
     is_superadmin = role and role["role"] in ("owner", "superadmin")
-    user_location = db.get_admin_location(session["telegram_id"]) if not is_superadmin else ""
+    locs = db.get_admin_locations(session["telegram_id"]) if not is_superadmin else []
+    user_location = locs[0] if locs else ""
     return render_template_string(
         HTML, logged_in=True, locations=LOCATIONS, months=get_months(),
         role_name=role_name, is_superadmin=is_superadmin, user_location=user_location,
