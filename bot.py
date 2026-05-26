@@ -9,7 +9,7 @@ from handlers.worker import (
 )
 from handlers.admin import (
     day_view, toggle_callback, stats, report, worker_filter,
-    list_workers, add_worker_conv, remove_worker_conv
+    list_workers, add_worker_conv, remove_worker_conv, admin_edit_worker_conv
 )
 from handlers.owner import (
     access_menu, list_roles, set_role_conv, unset_role_conv
@@ -21,6 +21,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+
 def run_webapp():
     port = int(os.environ.get("PORT", 8080))
     subprocess.Popen([
@@ -31,6 +32,7 @@ def run_webapp():
         "--log-level", "info"
     ])
     logging.info(f"Веб-панель запущено на порті {port}")
+
 
 def main():
     token = os.getenv("BOT_TOKEN")
@@ -49,6 +51,7 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^📊 Мої записи$"), my_records))
     application.add_handler(add_worker_conv())
     application.add_handler(remove_worker_conv())
+    application.add_handler(admin_edit_worker_conv())
     application.add_handler(CommandHandler("day", day_view))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("report", report))
@@ -62,6 +65,7 @@ def main():
 
     logging.info("Бот запущено...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
