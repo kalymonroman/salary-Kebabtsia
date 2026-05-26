@@ -118,7 +118,6 @@ class SheetsManager:
     def set_role(self, telegram_id, role, location=""):
         ws = self._ws(SH_ROLES)
         existing = self.get_all_roles_for(telegram_id)
-
         if role == "location_admin":
             for r in existing:
                 if (r.get("role") == "location_admin"
@@ -247,6 +246,44 @@ class SheetsManager:
         col = headers.index(field) + 1
         ws.update_cell(row_id, col, value)
         return True
+
+    def update_entry_recalc(self, row_id: int, field: str, value) -> dict:
+        """
+        Оновлює поле запису.
+        Якщо field в (hours, rate, revenue) — перераховує
+        hourly_rate, base_pay, rate_bonus, total.
+        Повертає оновлений запис.
+        """
+        from calc import calculate
+
+        ws = self._ws(SH_ENTRIES)
+        headers = ws.row_values(1)
+
+        if field in headers:
+            ws.update_cell(row_id, headers.index(field) + 1, value)
+
+        if field in ("hours", "rate", "revenue"):
+            entry   = self.get_entry_by_row(row_id)
+            hours   = float(str(entry.get("hours")    or 0).replace(",", "."))
+            rate    = float(str(entry.get("rate")      or 1).replace(",", "."))
+            revenue = float(str(entry.get("revenue")   or 0).replace(",", "."))
+            univ    = float(str(entry.get("universal") or 0).replace(",", "."))
+            bonus   = float(str(entry.get("bonus")     or 0).replace(",", "."))
+
+            calc        = calculate(hours, rate, revenue)
+            base_stored = round(calc["base_pay"] + calc["addon_pay"], 2)
+            total_new   = round(base_stored + calc["rate_bonus"] + univ + bonus, 2)
+
+            for fname, fval in [
+                ("hourly_rate", calc["hourly_rate"]),
+                ("base_pay",    base_stored),
+                ("rate_bonus",  round(calc["rate_bonus"], 2)),
+                ("total",       total_new),
+            ]:
+                if fname in headers:
+                    ws.update_cell(row_id, headers.index(fname) + 1, fval)
+
+        return self.get_entry_by_row(row_id)
 
     def set_universal_bonus(self, telegram_id, date, universal, bonus, row_id=None):
         ws = self._ws(SH_ENTRIES)
