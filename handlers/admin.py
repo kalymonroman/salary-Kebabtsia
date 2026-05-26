@@ -15,13 +15,21 @@ from calc import LOCATIONS, UNIVERSAL_BONUS, DAILY_BONUS
 
 db = SheetsManager()
 
-AW_NAME, AW_ID, AW_CONFIRM = range(40, 43)
-RW_SEARCH, RW_SELECT, RW_CONFIRM = range(50, 53)
+AW_NAME, AW_ID, AW_CONFIRM         = range(40, 43)
+RW_SEARCH, RW_SELECT, RW_CONFIRM   = range(50, 53)
+AEW_SEARCH, AEW_SELECT, AEW_DATE, AEW_PICK, AEW_FIELD, AEW_VALUE = range(60, 66)
 
 MONTHS_UA = [
     "", "січень", "лютий", "березень", "квітень", "травень", "червень",
     "липень", "серпень", "вересень", "жовтень", "листопад", "грудень"
 ]
+
+AEW_FIELDS_KB = ReplyKeyboardMarkup([
+    ["Змінити дату",    "Змінити заклад"],
+    ["Змінити ставку",  "Змінити години"],
+    ["Змінити виторг"],
+    ["❌ Скасувати"]
+], resize_keyboard=True, one_time_keyboard=True)
 
 
 def _now():
@@ -36,16 +44,25 @@ def _fmt(val):
 
 
 def _get_locations_for(tid):
-    """
-    Повертає список закладів адміна.
-    - location_admin з одним закладом  → ["Валова"]
-    - location_admin з двома           → ["Валова", "Spartak"]
-    - owner/superadmin                 → [] (всі заклади)
-    - не адмін                         → None
-    """
     if not db.is_admin_or_above(tid):
         return None
     return db.get_admin_locations(tid)
+
+
+def _parse_any_date(text: str):
+    text = text.strip()
+    now = datetime.now()
+    parts = text.split(".")
+    if len(parts) == 2:
+        text = f"{parts[0].zfill(2)}.{parts[1].zfill(2)}.{now.year}"
+    elif len(parts) == 3:
+        text = f"{parts[0].zfill(2)}.{parts[1].zfill(2)}.{parts[2]}"
+    else:
+        return None
+    try:
+        return datetime.strptime(text, "%d.%m.%Y").strftime("%d.%m.%Y")
+    except ValueError:
+        return None
 
 
 # ── /day ──────────────────────────────────────────────────────────────────────
@@ -76,17 +93,13 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) == 2:
         date = f"{parts[0].zfill(2)}.{parts[1].zfill(2)}.{_now().year}"
 
-    # owner/superadmin: locations_for_admin == [] → доступ до всіх
     is_superadmin = (not locations_for_admin) and db.is_admin_or_above(tid)
 
     if loc_arg:
-        # Заклад вказано явно
         target_location = loc_arg
     elif locations_for_admin and len(locations_for_admin) == 1:
-        # location_admin з одним закладом — відразу
         target_location = locations_for_admin[0]
     elif locations_for_admin and len(locations_for_admin) > 1:
-        # location_admin з кількома закладами — меню вибору
         kb = ReplyKeyboardMarkup(
             [[f"/day {date} {loc}"] for loc in locations_for_admin],
             resize_keyboard=True, one_time_keyboard=True
@@ -97,7 +110,6 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     elif is_superadmin:
-        # superadmin/owner — показує всі локації
         kb = ReplyKeyboardMarkup(
             [[f"/day {date} {loc}"] for loc in LOCATIONS],
             resize_keyboard=True, one_time_keyboard=True
@@ -193,7 +205,6 @@ async def toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.set_universal_bonus(int(tid_w), date, current_univ, new_bonus, row_id=row_id)
         await query.answer(f"⭐ Премія {'нарахована' if val else 'знята'}")
 
-    # Оновлюємо кнопки
     keyboard = query.message.reply_markup.inline_keyboard
     new_keyboard = []
     for row in keyboard:
@@ -231,8 +242,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = _now()
     args = context.args
-
-    # Визначаємо заклад
     locations_for_admin = _get_locations_for(tid)
     is_superadmin = not locations_for_admin and db.is_admin_or_above(tid)
 
@@ -529,6 +538,196 @@ async def remove_worker_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
+# ── /edit_worker ──────────────────────────────────────────────────────────────
+
+async def aew_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tid = update.effective_user.id
+    if not db.is_admin_or_above(tid):
+        await update.message.reply_text("⛔ Немає доступу.")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "✏️ Редагування запису працівника\n\nВведіть ім'я або Telegram ID:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return AEW_SEARCH
+
+
+async def aew_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip()
+    try:
+        workers = [db.get_worker(int(query))]
+        workers = [w for w in workers if w]
+    except ValueError:
+        workers = db.search_workers(query)
+
+    if not workers:
+        await update.message.reply_text("❌ Не знайдено. Спробуйте ще раз:")
+        return AEW_SEARCH
+
+    if len(workers) == 1:
+        context.user_data["aew_worker"] = workers[0]
+        await update.message.reply_text(
+            f"👤 {workers[0]['name']}\n\nВведіть дату запису (наприклад: 15.03 або 15.03.2026):"
+        )
+        return AEW_DATE
+
+    context.user_data["aew_results"] = workers
+    kb = ReplyKeyboardMarkup(
+        [[f"{i}. {w['name']}"] for i, w in enumerate(workers, 1)],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    await update.message.reply_text("Знайдено кілька — оберіть:", reply_markup=kb)
+    return AEW_SELECT
+
+
+async def aew_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        idx = int(update.message.text.split(".")[0]) - 1
+        worker = context.user_data["aew_results"][idx]
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Оберіть зі списку:")
+        return AEW_SELECT
+    context.user_data["aew_worker"] = worker
+    await update.message.reply_text(
+        f"👤 {worker['name']}\n\nВведіть дату запису (наприклад: 15.03 або 15.03.2026):"
+    )
+    return AEW_DATE
+
+
+async def aew_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    date = _parse_any_date(update.message.text)
+    if not date:
+        await update.message.reply_text("❌ Невірний формат. Введіть дату (наприклад: 15.03):")
+        return AEW_DATE
+
+    worker = context.user_data["aew_worker"]
+    entries = db.get_entries_by_date(worker["telegram_id"], date)
+
+    if not entries:
+        await update.message.reply_text(
+            f"❌ Записів за {date} для {worker['name']} не знайдено.\nСпробуйте іншу дату:"
+        )
+        return AEW_DATE
+
+    if len(entries) == 1:
+        context.user_data["aew_entry"] = entries[0]
+        return await _aew_ask_field(update, context)
+
+    context.user_data["aew_entries"] = entries
+    lines = [f"За {date} знайдено {len(entries)} записи:\n"]
+    for i, e in enumerate(entries, 1):
+        lines.append(f"{i}. {e['location']} | {e['hours']}г | {float(e['total']):,.0f}₴")
+    lines.append("\nВведіть номер:")
+    await update.message.reply_text("\n".join(lines))
+    return AEW_PICK
+
+
+async def aew_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        idx = int(update.message.text.strip()) - 1
+        entry = context.user_data["aew_entries"][idx]
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Введіть коректний номер:")
+        return AEW_PICK
+    context.user_data["aew_entry"] = entry
+    return await _aew_ask_field(update, context)
+
+
+async def _aew_ask_field(update, context):
+    e = context.user_data["aew_entry"]
+    await update.message.reply_text(
+        f"📅 {e['date']} — {e['location']}\n"
+        f"⏱ {e['hours']} год | Ставка {e['rate']} | Виторг {float(e.get('revenue', 0)):,.0f}\n"
+        f"💵 Разом: {float(e.get('total', 0)):,.0f} грн\n\nЩо змінити?",
+        reply_markup=AEW_FIELDS_KB
+    )
+    return AEW_FIELD
+
+
+async def aew_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "❌ Скасувати":
+        await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    field_map = {
+        "Змінити дату":    "date",
+        "Змінити заклад":  "location",
+        "Змінити ставку":  "rate",
+        "Змінити години":  "hours",
+        "Змінити виторг":  "revenue",
+    }
+    if text not in field_map:
+        await update.message.reply_text("Оберіть поле:", reply_markup=AEW_FIELDS_KB)
+        return AEW_FIELD
+
+    context.user_data["aew_field"] = field_map[text]
+    loc_kb = ReplyKeyboardMarkup([[loc] for loc in LOCATIONS], resize_keyboard=True, one_time_keyboard=True)
+    rate_kb = ReplyKeyboardMarkup([
+        ["Ставка 1 — 110 грн/год"],
+        ["Ставка 1.5 — надбавка +20 грн/год"]
+    ], resize_keyboard=True, one_time_keyboard=True)
+
+    prompts = {
+        "date":     ("Введіть нову дату (наприклад: 20.05 або 20.05.2026):", ReplyKeyboardRemove()),
+        "location": ("Оберіть новий заклад:", loc_kb),
+        "rate":     ("Оберіть нову ставку:", rate_kb),
+        "hours":    ("Введіть нову кількість годин:", ReplyKeyboardRemove()),
+        "revenue":  ("Введіть новий виторг (грн):", ReplyKeyboardRemove()),
+    }
+    msg, kb = prompts[field_map[text]]
+    await update.message.reply_text(msg, reply_markup=kb)
+    return AEW_VALUE
+
+
+async def aew_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    field  = context.user_data["aew_field"]
+    text   = update.message.text.strip()
+    entry  = context.user_data["aew_entry"]
+    row_id = entry["row_id"]
+
+    if field == "date":
+        value = _parse_any_date(text)
+        if not value:
+            await update.message.reply_text("❌ Невірний формат дати. Спробуйте ще:")
+            return AEW_VALUE
+
+    elif field == "location":
+        if text not in LOCATIONS:
+            loc_kb = ReplyKeyboardMarkup([[loc] for loc in LOCATIONS], resize_keyboard=True, one_time_keyboard=True)
+            await update.message.reply_text("Оберіть зі списку:", reply_markup=loc_kb)
+            return AEW_VALUE
+        value = text
+
+    elif field == "rate":
+        value = 1.5 if "1.5" in text else 1.0
+
+    elif field in ("hours", "revenue"):
+        try:
+            value = float(text.replace(",", ".").replace(" ", ""))
+            if value <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("❌ Введіть коректне число:")
+            return AEW_VALUE
+
+    else:
+        value = text
+
+    updated = db.update_entry_recalc(row_id, field, value)
+    worker  = context.user_data["aew_worker"]
+
+    await update.message.reply_text(
+        f"✅ Збережено!\n\n"
+        f"👤 {worker['name']}\n"
+        f"📅 {updated['date']} — {updated['location']}\n"
+        f"⏱ {updated['hours']} год | Ставка {updated['rate']}\n"
+        f"💵 Разом: {float(updated.get('total', 0)):,.0f} грн",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
@@ -544,7 +743,10 @@ def add_worker_conv():
             AW_ID:      [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_id)],
             AW_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", cancel),
+        ],
     )
 
 
@@ -556,5 +758,26 @@ def remove_worker_conv():
             RW_SELECT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_select)],
             RW_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", cancel),
+        ],
+    )
+
+
+def admin_edit_worker_conv():
+    return ConversationHandler(
+        entry_points=[CommandHandler("edit_worker", aew_start)],
+        states={
+            AEW_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_search)],
+            AEW_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_select)],
+            AEW_DATE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_date)],
+            AEW_PICK:   [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_pick)],
+            AEW_FIELD:  [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_field)],
+            AEW_VALUE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_value)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", cancel),
+        ],
     )
