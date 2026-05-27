@@ -37,6 +37,10 @@ RATE_KB = ReplyKeyboardMarkup([
     ["Ставка 1.5 — 110 грн/год + більший бонус"]
 ], resize_keyboard=True, one_time_keyboard=True)
 
+MENU_FILTER = filters.Regex(
+    r"^(📝 Заповнити день|📊 Мої записи|➕ Додати день|🗑 Видалити день|✏️ Змінити запис)$"
+)
+
 
 def _today():
     return datetime.now().strftime("%d.%m.%Y")
@@ -307,9 +311,14 @@ async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    field = context.user_data["edit_field"]
+    field = context.user_data.get("edit_field")
+    entry = context.user_data.get("edit_entry")
+
+    if not field or not entry:
+        await update.message.reply_text("Щось пішло не так. Почніть знову.", reply_markup=MAIN_KB)
+        return ConversationHandler.END
+
     text = update.message.text
-    entry = context.user_data["edit_entry"]
 
     if field == "location":
         if text not in LOCATIONS:
@@ -501,7 +510,10 @@ async def _ask_del_confirm(update, context):
 
 async def del_day_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "Так" in update.message.text:
-        entry = context.user_data["del_entry"]
+        entry = context.user_data.get("del_entry")
+        if not entry:
+            await update.message.reply_text("Щось пішло не так. Почніть знову.", reply_markup=MAIN_KB)
+            return ConversationHandler.END
         db.delete_entry_by_row(entry["row_id"])
         await update.message.reply_text(
             f"✅ Запис за {entry['date']} — {entry['location']} видалено.",
@@ -519,6 +531,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── ConversationHandlers ──────────────────────────────────────────────────────
 
+FALLBACKS = [
+    CommandHandler("cancel", cancel),
+    CommandHandler("start", cancel),
+    MessageHandler(MENU_FILTER, cancel),
+]
+
+
 def fill_conv():
     return ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^📝 Заповнити день$"), fill_start)],
@@ -528,10 +547,7 @@ def fill_conv():
             HOURS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, fill_hours)],
             REVENUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, fill_revenue)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", cancel),
-        ],
+        fallbacks=FALLBACKS,
     )
 
 
@@ -544,10 +560,7 @@ def edit_conv():
             EDIT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field)],
             EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", cancel),
-        ],
+        fallbacks=FALLBACKS,
     )
 
 
@@ -561,10 +574,7 @@ def add_day_conv():
             ADD_HOURS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, add_day_hours)],
             ADD_REVENUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_day_revenue)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", cancel),
-        ],
+        fallbacks=FALLBACKS,
     )
 
 
@@ -576,8 +586,5 @@ def del_day_conv():
             DEL_PICK:    [MessageHandler(filters.TEXT & ~filters.COMMAND, del_day_pick)],
             DEL_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, del_day_confirm)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", cancel),
-        ],
+        fallbacks=FALLBACKS,
     )
