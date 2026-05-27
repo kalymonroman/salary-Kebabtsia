@@ -31,6 +31,11 @@ AEW_FIELDS_KB = ReplyKeyboardMarkup([
     ["❌ Скасувати"]
 ], resize_keyboard=True, one_time_keyboard=True)
 
+ADMIN_FALLBACKS = [
+    CommandHandler("cancel", cancel_admin := None),  # буде перевизначено нижче
+    CommandHandler("start", cancel_admin),
+]
+
 
 def _now():
     return datetime.now()
@@ -64,6 +69,16 @@ def _parse_any_date(text: str):
     except ValueError:
         return None
 
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+
+ADMIN_FALLBACKS = [
+    CommandHandler("cancel", cancel),
+    CommandHandler("start", cancel),
+]
 
 # ── /day ──────────────────────────────────────────────────────────────────────
 
@@ -160,10 +175,7 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
         ])
 
-    await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 # ── toggle callback ───────────────────────────────────────────────────────────
@@ -251,13 +263,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         location = locations_for_admin[0]
     elif locations_for_admin and len(locations_for_admin) > 1:
         locs_str = "\n".join(f"  /stats {loc}" for loc in locations_for_admin)
-        await update.message.reply_text(
-            f"🏪 У вас кілька закладів. Вкажіть який:\n{locs_str}"
-        )
+        await update.message.reply_text(f"🏪 Вкажіть заклад:\n{locs_str}")
         return
     elif is_superadmin and not args:
         await update.message.reply_text(
-            "Вкажіть заклад: /stats Валова\nАбо /report для зведеного звіту по всіх."
+            "Вкажіть заклад: /stats Валова\nАбо /report для зведеного звіту."
         )
         return
     else:
@@ -274,7 +284,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     summary = db.summarize_workers(entries)
     month_label = f"{MONTHS_UA[now.month]} {now.year}"
     lines = [f"📊 {location} — {month_label}\n"]
-
     total_hours = total_base = total_rb = total_univ = total_bonus = total_all = 0.0
 
     for tid_w, s in summary.items():
@@ -284,7 +293,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   Бонус каси: {_fmt(s['rate_bonus'])} грн\n"
             f"   Університал: {_fmt(s['universal'])} грн\n"
             f"   Премія: {_fmt(s['bonus'])} грн\n"
-            f"   ─── Разом: {_fmt(s['total'])} грн\n"
+            f"   --- Разом: {_fmt(s['total'])} грн\n"
         )
         total_hours += s["hours"]
         total_base  += s["base_pay"]
@@ -294,7 +303,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_all   += s["total"]
 
     lines.append(
-        f"─────────────────\n"
+        f"-----------------\n"
         f"Всього: {total_hours:.1f} год\n"
         f"База: {_fmt(total_base)} | Каса: {_fmt(total_rb)}\n"
         f"Університал: {_fmt(total_univ)} | Премії: {_fmt(total_bonus)}\n"
@@ -322,8 +331,8 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc_summary = db.summarize_locations(entries)
     month_label = f"{MONTHS_UA[now.month]} {now.year}"
     lines = [f"📋 Зведений звіт — {month_label}\n"]
-
     grand_total = 0.0
+
     for loc in sorted(loc_summary):
         s = loc_summary[loc]
         lines.append(
@@ -334,7 +343,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         grand_total += s["total"]
 
-    lines.append(f"─────────────────\n💰 Загалом по мережі: {_fmt(grand_total)} грн")
+    lines.append(f"-----------------\n💰 Загалом по мережі: {_fmt(grand_total)} грн")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -396,7 +405,7 @@ async def list_workers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = [f"👥 Працівників: {len(workers)}\n"]
     for w in workers:
-        lines.append(f"• {w['name']} (ID: {w['telegram_id']})")
+        lines.append(f"- {w['name']} (ID: {w['telegram_id']})")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -418,7 +427,7 @@ async def add_worker_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["aw_name"] = update.message.text.strip()
     await update.message.reply_text(
         f"Ім'я: {context.user_data['aw_name']}\n"
-        "Введіть Telegram ID працівника (числовий, дізнатись через @userinfobot):"
+        "Введіть Telegram ID (числовий, дізнатись через @userinfobot):"
     )
     return AW_ID
 
@@ -501,7 +510,7 @@ async def remove_worker_search(update: Update, context: ContextTypes.DEFAULT_TYP
         [[f"{i}. {r['name']}"] for i, r in enumerate(results, 1)],
         resize_keyboard=True, one_time_keyboard=True
     )
-    await update.message.reply_text("Знайдено кілька — оберіть:", reply_markup=kb)
+    await update.message.reply_text("Знайдено кілька - оберіть:", reply_markup=kb)
     return RW_SELECT
 
 
@@ -576,7 +585,7 @@ async def aew_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [[f"{i}. {w['name']}"] for i, w in enumerate(workers, 1)],
         resize_keyboard=True, one_time_keyboard=True
     )
-    await update.message.reply_text("Знайдено кілька — оберіть:", reply_markup=kb)
+    await update.message.reply_text("Знайдено кілька - оберіть:", reply_markup=kb)
     return AEW_SELECT
 
 
@@ -681,9 +690,14 @@ async def aew_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def aew_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    field  = context.user_data["aew_field"]
+    field  = context.user_data.get("aew_field")
+    entry  = context.user_data.get("aew_entry")
+
+    if not field or not entry:
+        await update.message.reply_text("Щось пішло не так. Почніть знову.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
     text   = update.message.text.strip()
-    entry  = context.user_data["aew_entry"]
     row_id = entry["row_id"]
 
     if field == "date":
@@ -691,17 +705,14 @@ async def aew_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not value:
             await update.message.reply_text("❌ Невірний формат дати. Спробуйте ще:")
             return AEW_VALUE
-
     elif field == "location":
         if text not in LOCATIONS:
             loc_kb = ReplyKeyboardMarkup([[loc] for loc in LOCATIONS], resize_keyboard=True, one_time_keyboard=True)
             await update.message.reply_text("Оберіть зі списку:", reply_markup=loc_kb)
             return AEW_VALUE
         value = text
-
     elif field == "rate":
         value = 1.5 if "1.5" in text else 1.0
-
     elif field in ("hours", "revenue"):
         try:
             value = float(text.replace(",", ".").replace(" ", ""))
@@ -710,7 +721,6 @@ async def aew_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ Введіть коректне число:")
             return AEW_VALUE
-
     else:
         value = text
 
@@ -728,11 +738,6 @@ async def aew_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
-
-
 # ── ConversationHandlers ──────────────────────────────────────────────────────
 
 def add_worker_conv():
@@ -743,10 +748,7 @@ def add_worker_conv():
             AW_ID:      [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_id)],
             AW_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_worker_confirm)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", cancel),
-        ],
+        fallbacks=ADMIN_FALLBACKS,
     )
 
 
@@ -758,10 +760,7 @@ def remove_worker_conv():
             RW_SELECT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_select)],
             RW_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_worker_confirm)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", cancel),
-        ],
+        fallbacks=ADMIN_FALLBACKS,
     )
 
 
@@ -776,8 +775,5 @@ def admin_edit_worker_conv():
             AEW_FIELD:  [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_field)],
             AEW_VALUE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, aew_value)],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", cancel),
-        ],
+        fallbacks=ADMIN_FALLBACKS,
     )
