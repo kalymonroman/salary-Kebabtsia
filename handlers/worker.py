@@ -182,35 +182,40 @@ async def fill_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Мої записи ────────────────────────────────────────────────────────────────
 
 async def my_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tid = update.effective_user.id
-    worker = db.get_worker(tid)
-    if not worker:
-        await update.message.reply_text("⛔ Вас немає в системі.")
-        return
-    m, y = _this_month_year()
-    entries = db.get_worker_entries(tid, m, y)
-    if not entries:
-        await update.message.reply_text("📭 За цей місяць записів ще немає.", reply_markup=MAIN_KB)
-        return
+    try:
+        tid = update.effective_user.id
+        worker = db.get_worker(tid)
+        if not worker:
+            await update.message.reply_text("⛔ Вас немає в системі.")
+            return
+        m, y = _this_month_year()
+        entries = db.get_worker_entries(tid, m, y)
+        if not entries:
+            await update.message.reply_text(
+                "📭 За цей місяць записів ще немає.", reply_markup=MAIN_KB
+            )
+            return
 
-    total = sum(float(r["total"]) for r in entries)
-    hours = sum(float(r["hours"]) for r in entries)
-    now = datetime.now()
+        total = sum(float(r["total"]) for r in entries)
+        hours = sum(float(r["hours"]) for r in entries)
+        now = datetime.now()
 
-    lines = [f"📊 *{worker['name']}* — {now.strftime('%B %Y')}\n"]
-    for r in entries:
-        univ = "🔧" if float(r.get("universal", 0)) > 0 else ""
-        bon = "⭐" if float(r.get("bonus", 0)) > 0 else ""
-        lines.append(
-            f"  {r['date']} | {r['location']} | {r['hours']}г | "
-            f"{float(r['total']):,.0f}₴ {univ}{bon}"
+        lines = [f"📊 *{worker['name']}* — {now.strftime('%B %Y')}\n"]
+        for r in entries:
+            univ = "🔧" if float(r.get("universal", 0)) > 0 else ""
+            bon = "⭐" if float(r.get("bonus", 0)) > 0 else ""
+            lines.append(
+                f"  {r['date']} | {r['location']} | {r['hours']}г | "
+                f"{float(r['total']):,.0f}₴ {univ}{bon}"
+            )
+        lines.append(f"\n⏱ Годин: {hours:.1f}")
+        lines.append(f"💵 Разом: *{total:,.0f} грн*")
+
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="Markdown", reply_markup=MAIN_KB
         )
-    lines.append(f"\n⏱ Годин: {hours:.1f}")
-    lines.append(f"💵 Разом: *{total:,.0f} грн*")
-
-    await update.message.reply_text(
-        "\n".join(lines), parse_mode="Markdown", reply_markup=MAIN_KB
-    )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка: {str(e)[:200]}")
 
 
 # ── Редагувати запис (лише поточний місяць) ───────────────────────────────────
@@ -441,22 +446,26 @@ async def add_day_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Видалити день (лише поточний місяць) ─────────────────────────────────────
 
 async def del_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tid = update.effective_user.id
-    if not db.get_worker(tid):
-        await update.message.reply_text("⛔ Вас немає в системі.")
+    try:
+        tid = update.effective_user.id
+        if not db.get_worker(tid):
+            await update.message.reply_text("⛔ Вас немає в системі.")
+            return ConversationHandler.END
+        m, y = _this_month_year()
+        entries = db.get_worker_entries(tid, m, y)
+        if not entries:
+            await update.message.reply_text("📭 Немає записів для видалення.", reply_markup=MAIN_KB)
+            return ConversationHandler.END
+        now = datetime.now()
+        lines = [f"Ваші записи за {now.strftime('%B %Y')}:\n"]
+        for r in entries:
+            lines.append(f"  {r['date']} | {r['location']} | {r['hours']}г | {float(r['total']):,.0f}₴")
+        lines.append("\nВведіть дату для видалення (наприклад: 02.05):")
+        await update.message.reply_text("\n".join(lines), reply_markup=ReplyKeyboardRemove())
+        return DEL_DATE
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка: {str(e)[:200]}")
         return ConversationHandler.END
-    m, y = _this_month_year()
-    entries = db.get_worker_entries(tid, m, y)
-    if not entries:
-        await update.message.reply_text("📭 Немає записів для видалення.", reply_markup=MAIN_KB)
-        return ConversationHandler.END
-    now = datetime.now()
-    lines = [f"Ваші записи за {now.strftime('%B %Y')}:\n"]
-    for r in entries:
-        lines.append(f"  {r['date']} | {r['location']} | {r['hours']}г | {float(r['total']):,.0f}₴")
-    lines.append("\nВведіть дату для видалення (наприклад: 02.05):")
-    await update.message.reply_text("\n".join(lines), reply_markup=ReplyKeyboardRemove())
-    return DEL_DATE
 
 
 async def del_day_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
