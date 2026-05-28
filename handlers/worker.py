@@ -51,6 +51,14 @@ def _this_month_year():
     return n.month, n.year
 
 
+def _f(val):
+    """float з підтримкою коми як десяткового роздільника."""
+    try:
+        return float(str(val).replace(" ", "").replace(",", "."))
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def _validate_date_current_month(text: str):
     now = datetime.now()
     parts = text.strip().split(".")
@@ -196,17 +204,17 @@ async def my_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        total = sum(float(r["total"]) for r in entries)
-        hours = sum(float(r["hours"]) for r in entries)
+        total = sum(_f(r["total"]) for r in entries)
+        hours = sum(_f(r["hours"]) for r in entries)
         now = datetime.now()
 
         lines = [f"📊 *{worker['name']}* — {now.strftime('%B %Y')}\n"]
         for r in entries:
-            univ = "🔧" if float(r.get("universal", 0)) > 0 else ""
-            bon = "⭐" if float(r.get("bonus", 0)) > 0 else ""
+            univ = "🔧" if _f(r.get("universal", 0)) > 0 else ""
+            bon = "⭐" if _f(r.get("bonus", 0)) > 0 else ""
             lines.append(
                 f"  {r['date']} | {r['location']} | {r['hours']}г | "
-                f"{float(r['total']):,.0f}₴ {univ}{bon}"
+                f"{_f(r['total']):,.0f}₴ {univ}{bon}"
             )
         lines.append(f"\n⏱ Годин: {hours:.1f}")
         lines.append(f"💵 Разом: *{total:,.0f} грн*")
@@ -261,7 +269,7 @@ async def edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["edit_entries"] = entries
     lines = [f"За {date} знайдено {len(entries)} записи:\n"]
     for i, e in enumerate(entries, 1):
-        lines.append(f"{i}. {e['location']} | {e['hours']}г | {float(e['total']):,.0f}₴")
+        lines.append(f"{i}. {e['location']} | {e['hours']}г | {_f(e['total']):,.0f}₴")
     lines.append("\nВведіть номер запису:")
     await update.message.reply_text("\n".join(lines))
     return EDIT_PICK
@@ -459,7 +467,7 @@ async def del_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = datetime.now()
         lines = [f"Ваші записи за {now.strftime('%B %Y')}:\n"]
         for r in entries:
-            lines.append(f"  {r['date']} | {r['location']} | {r['hours']}г | {float(r['total']):,.0f}₴")
+            lines.append(f"  {r['date']} | {r['location']} | {r['hours']}г | {_f(r['total']):,.0f}₴")
         lines.append("\nВведіть дату для видалення (наприклад: 02.05):")
         await update.message.reply_text("\n".join(lines), reply_markup=ReplyKeyboardRemove())
         return DEL_DATE
@@ -486,7 +494,7 @@ async def del_day_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _ask_del_confirm(update, context)
     lines = [f"За {date} знайдено {len(entries)} записи:\n"]
     for i, e in enumerate(entries, 1):
-        lines.append(f"{i}. {e['location']} | {e['hours']}г | {float(e['total']):,.0f}₴")
+        lines.append(f"{i}. {e['location']} | {e['hours']}г | {_f(e['total']):,.0f}₴")
     lines.append("\nВведіть номер для видалення:")
     await update.message.reply_text("\n".join(lines))
     return DEL_PICK
@@ -508,7 +516,7 @@ async def _ask_del_confirm(update, context):
     await update.message.reply_text(
         f"Видалити запис?\n\n"
         f"📅 {entry['date']} — {entry['location']}\n"
-        f"⏱ {entry['hours']} год | 💵 {float(entry['total']):,.0f} грн",
+        f"⏱ {entry['hours']} год | 💵 {_f(entry['total']):,.0f} грн",
         reply_markup=ReplyKeyboardMarkup(
             [["🗑 Так, видалити"], ["❌ Скасувати"]],
             resize_keyboard=True, one_time_keyboard=True
