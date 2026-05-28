@@ -43,12 +43,17 @@ def main():
 
     application = Application.builder().token(token).build()
 
+    # Група -1 — вищий пріоритет, виконуються ДО ConversationHandler-ів
+    application.add_handler(
+        MessageHandler(filters.Regex("^📊 Мої записи$"), my_records), group=-1
+    )
+    application.add_handler(del_day_conv(), group=-1)
+
+    # Група 0 — стандартна
     application.add_handler(CommandHandler("start", start))
     application.add_handler(fill_conv())
     application.add_handler(edit_conv())
     application.add_handler(add_day_conv())
-    application.add_handler(del_day_conv())
-    application.add_handler(MessageHandler(filters.Regex("^📊 Мої записи$"), my_records))
     application.add_handler(add_worker_conv())
     application.add_handler(remove_worker_conv())
     application.add_handler(admin_edit_worker_conv())
