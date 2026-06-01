@@ -9,7 +9,8 @@ from handlers.worker import (
 )
 from handlers.admin import (
     day_view, toggle_callback, stats, report, worker_filter,
-    list_workers, add_worker_conv, remove_worker_conv, admin_edit_worker_conv
+    list_workers, add_worker_conv, remove_worker_conv,
+    admin_edit_worker_conv, add_record_conv
 )
 from handlers.owner import (
     access_menu, list_roles, set_role_conv, unset_role_conv
@@ -43,13 +44,13 @@ def main():
 
     application = Application.builder().token(token).build()
 
-    # Група -1 — вищий пріоритет, виконуються ДО ConversationHandler-ів
+    # Група -1 — вищий пріоритет
     application.add_handler(
         MessageHandler(filters.Regex("^📊 Мої записи$"), my_records), group=-1
     )
     application.add_handler(del_day_conv(), group=-1)
 
-    # Група 0 — стандартна
+    # Група 0
     application.add_handler(CommandHandler("start", start))
     application.add_handler(fill_conv())
     application.add_handler(edit_conv())
@@ -57,6 +58,7 @@ def main():
     application.add_handler(add_worker_conv())
     application.add_handler(remove_worker_conv())
     application.add_handler(admin_edit_worker_conv())
+    application.add_handler(add_record_conv())
     application.add_handler(CommandHandler("day", day_view))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("report", report))
