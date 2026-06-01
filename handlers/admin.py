@@ -777,3 +777,202 @@ def admin_edit_worker_conv():
         },
         fallbacks=ADMIN_FALLBACKS,
     )
+
+
+# ── /add_record ───────────────────────────────────────────────────────────────
+
+AR_WORKER, AR_SELECT, AR_DATE, AR_LOC, AR_RATE, AR_HOURS, AR_REVENUE, AR_CONFIRM = range(70, 78)
+
+AR_RATE_KB = ReplyKeyboardMarkup([
+    ["Ставка 1 — 110 грн/год"],
+    ["Ставка 1.5 — надбавка +20 грн/год"]
+], resize_keyboard=True, one_time_keyboard=True)
+
+
+async def ar_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tid = update.effective_user.id
+    if not db.is_superadmin_or_above(tid):
+        await update.message.reply_text("⛔ Тільки для власника та головного адміна.")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "➕ Додавання запису за будь-який період\n\nВведіть ім'я або Telegram ID працівника:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return AR_WORKER
+
+
+async def ar_worker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip()
+    try:
+        workers = [db.get_worker(int(query))]
+        workers = [w for w in workers if w]
+    except ValueError:
+        workers = db.search_workers(query)
+
+    if not workers:
+        await update.message.reply_text("❌ Не знайдено. Спробуйте ще раз:")
+        return AR_WORKER
+
+    if len(workers) == 1:
+        context.user_data["ar_worker"] = workers[0]
+        await update.message.reply_text(
+            f"👤 {workers[0]['name']}\n\nВведіть дату запису (наприклад: 15.03 або 15.03.2025):"
+        )
+        return AR_DATE
+
+    context.user_data["ar_results"] = workers
+    kb = ReplyKeyboardMarkup(
+        [[f"{i}. {w['name']}"] for i, w in enumerate(workers, 1)],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    await update.message.reply_text("Знайдено кілька - оберіть:", reply_markup=kb)
+    return AR_SELECT
+
+
+async def ar_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        idx = int(update.message.text.split(".")[0]) - 1
+        worker = context.user_data["ar_results"][idx]
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Оберіть зі списку:")
+        return AR_SELECT
+    context.user_data["ar_worker"] = worker
+    await update.message.reply_text(
+        f"👤 {worker['name']}\n\nВведіть дату запису (наприклад: 15.03 або 15.03.2025):"
+    )
+    return AR_DATE
+
+
+async def ar_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    date = _parse_any_date(update.message.text)
+    if not date:
+        await update.message.reply_text("❌ Невірний формат. Введіть дату (наприклад: 15.03):")
+        return AR_DATE
+    context.user_data["ar_date"] = date
+    loc_kb = ReplyKeyboardMarkup(
+        [[loc] for loc in LOCATIONS], resize_keyboard=True, one_time_keyboard=True
+    )
+    await update.message.reply_text(f"📅 {date}\n\nОберіть заклад:", reply_markup=loc_kb)
+    return AR_LOC
+
+
+async def ar_loc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text not in LOCATIONS:
+        loc_kb = ReplyKeyboardMarkup(
+            [[loc] for loc in LOCATIONS], resize_keyboard=True, one_time_keyboard=True
+        )
+        await update.message.reply_text("Оберіть зі списку:", reply_markup=loc_kb)
+        return AR_LOC
+    context.user_data["ar_loc"] = update.message.text
+    await update.message.reply_text("Оберіть ставку:", reply_markup=AR_RATE_KB)
+    return AR_RATE
+
+
+async def ar_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if "1.5" in text:
+        context.user_data["ar_rate"] = 1.5
+    elif "Ставка 1" in text:
+        context.user_data["ar_rate"] = 1.0
+    else:
+        await update.message.reply_text("Оберіть ставку:", reply_markup=AR_RATE_KB)
+        return AR_RATE
+    await update.message.reply_text("⏱ Кількість годин:", reply_markup=ReplyKeyboardRemove())
+    return AR_HOURS
+
+
+async def ar_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        h = float(update.message.text.replace(",", "."))
+        if not (0 < h <= 24):
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Введіть коректну кількість годин (наприклад: 8 або 7.5):")
+        return AR_HOURS
+    context.user_data["ar_hours"] = h
+    await update.message.reply_text("💰 Виторг закладу (грн):")
+    return AR_REVENUE
+
+
+async def ar_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        rev = float(update.message.text.replace(",", ".").replace(" ", ""))
+        if rev < 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Введіть суму виторгу:")
+        return AR_REVENUE
+
+    from calc import calculate, format_result
+    ud = context.user_data
+    calc = calculate(ud["ar_hours"], ud["ar_rate"], rev)
+    context.user_data["ar_revenue"] = rev
+    context.user_data["ar_calc"] = calc
+
+    kb = ReplyKeyboardMarkup(
+        [["✅ Так, зберегти", "❌ Скасувати"]],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    worker = ud["ar_worker"]
+    await update.message.reply_text(
+        f"Підтвердіть запис:\n\n"
+        f"👤 {worker['name']}\n"
+        f"📅 {ud['ar_date']} — {ud['ar_loc']}\n"
+        f"⏱ {ud['ar_hours']} год | Ставка {ud['ar_rate']}\n"
+        f"💵 Виторг: {rev:,.0f} грн\n"
+        f"💰 Сума: {calc['total']:,.0f} грн",
+        reply_markup=kb
+    )
+    return AR_CONFIRM
+
+
+async def ar_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "Так" not in update.message.text:
+        await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    ud = context.user_data
+    worker = ud["ar_worker"]
+    calc = ud["ar_calc"]
+
+    from sheets import SheetsManager
+    db_local = db
+    db_local.save_entry(
+        telegram_id=worker["telegram_id"],
+        name=worker["name"],
+        date=ud["ar_date"],
+        location=ud["ar_loc"],
+        hours=ud["ar_hours"],
+        rate=ud["ar_rate"],
+        revenue=ud["ar_revenue"],
+        hourly_rate=calc["hourly_rate"],
+        base_pay=round(calc["base_pay"] + calc["addon_pay"], 2),
+        rate_bonus=calc["rate_bonus"],
+    )
+
+    await update.message.reply_text(
+        f"✅ Запис збережено!\n\n"
+        f"👤 {worker['name']}\n"
+        f"📅 {ud['ar_date']} — {ud['ar_loc']}\n"
+        f"⏱ {ud['ar_hours']} год | Ставка {ud['ar_rate']}\n"
+        f"💰 Сума: {calc['total']:,.0f} грн",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
+def add_record_conv():
+    return ConversationHandler(
+        entry_points=[CommandHandler("add_record", ar_start)],
+        states={
+            AR_WORKER:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_worker)],
+            AR_SELECT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_select)],
+            AR_DATE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_date)],
+            AR_LOC:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_loc)],
+            AR_RATE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_rate)],
+            AR_HOURS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_hours)],
+            AR_REVENUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_revenue)],
+            AR_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, ar_confirm)],
+        },
+        fallbacks=ADMIN_FALLBACKS,
+    )
