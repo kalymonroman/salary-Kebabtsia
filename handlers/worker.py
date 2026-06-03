@@ -13,9 +13,9 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from calc import calculate, format_result, LOCATIONS
-from sheets import SheetsManager
+from db import DB
 
-db = SheetsManager()
+db = DB()
 
 (LOC, RATE, HOURS, REVENUE) = range(4)
 (EDIT_DATE, EDIT_PICK, EDIT_FIELD, EDIT_VALUE) = range(10, 14)
