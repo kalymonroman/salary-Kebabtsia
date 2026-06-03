@@ -10,10 +10,10 @@ from telegram.ext import (
     ConversationHandler, CommandHandler, MessageHandler,
     filters, ContextTypes
 )
-from sheets import SheetsManager
+from db import DB
 from calc import LOCATIONS
 
-db = SheetsManager()
+db = DB()
 
 ROLES_UA = {
     "location_admin": "Адмін закладу",
@@ -57,7 +57,6 @@ async def list_roles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for r in roles:
         role_label = role_names.get(r["role"], r["role"])
         loc = f" — {r['location']}" if r.get("location") else ""
-        # Знайти ім'я
         w = db.get_worker(r["telegram_id"])
         name = w["name"] if w else f"ID:{r['telegram_id']}"
         lines.append(f"{role_label}: {name}{loc}")
@@ -80,7 +79,6 @@ async def set_role_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_role_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    # Спочатку пошук за ID
     try:
         search_id = int(text)
         w = db.get_worker(search_id)
@@ -89,7 +87,6 @@ async def set_role_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await _ask_role(update, context)
     except ValueError:
         pass
-    # Пошук за ім'ям
     results = db.search_workers(text)
     if not results:
         await update.message.reply_text("❌ Не знайдено. Спробуйте ще раз:")
@@ -103,7 +100,7 @@ async def set_role_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{i}. {r['name']}")
     lines.append("\nВведіть номер:")
     await update.message.reply_text("\n".join(lines))
-    return SR_USER + 10  # Проміжний стан вибору
+    return SR_USER + 10
 
 
 async def set_role_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -193,7 +190,7 @@ async def set_role_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         role_label = "Адмін закладу" if role == "location_admin" else "Головний адмін"
         loc_label = f" — {loc}" if loc else ""
         await update.message.reply_text(
-            f"✅ Готово!\n{w['name']} — {role_label}{loc_label}",
+            f"✅ Готово!\n{w['name']} - {role_label}{loc_label}",
             reply_markup=ReplyKeyboardRemove()
         )
         try:
@@ -249,7 +246,7 @@ async def unset_role_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Зняти роль?\n\n"
         f"👤 {w['name']}\n"
-        f"Роль: {role['role']}" + (f" — {role['location']}" if role.get("location") else ""),
+        f"Роль: {role['role']}" + (f" - {role['location']}" if role.get("location") else ""),
         reply_markup=ReplyKeyboardMarkup(
             [["✅ Так, зняти роль"], ["❌ Скасувати"]],
             resize_keyboard=True, one_time_keyboard=True
@@ -282,13 +279,16 @@ def set_role_conv():
     return ConversationHandler(
         entry_points=[CommandHandler("set_role", set_role_start)],
         states={
-            SR_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_user)],
+            SR_USER:      [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_user)],
             SR_USER + 10: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_select)],
-            SR_ROLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_role)],
-            SR_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_location)],
-            SR_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_confirm)],
+            SR_ROLE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_role)],
+            SR_LOCATION:  [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_location)],
+            SR_CONFIRM:   [MessageHandler(filters.TEXT & ~filters.COMMAND, set_role_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", cancel),
+        ],
     )
 
 
@@ -296,8 +296,11 @@ def unset_role_conv():
     return ConversationHandler(
         entry_points=[CommandHandler("unset_role", unset_role_start)],
         states={
-            UR_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, unset_role_user)],
+            UR_USER:    [MessageHandler(filters.TEXT & ~filters.COMMAND, unset_role_user)],
             UR_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, unset_role_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", cancel),
+        ],
     )
