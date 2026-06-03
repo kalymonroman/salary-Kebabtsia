@@ -10,10 +10,10 @@ from telegram.ext import (
     ConversationHandler, CommandHandler, MessageHandler,
     CallbackQueryHandler, filters, ContextTypes
 )
-from sheets import SheetsManager
+from db import DB
 from calc import LOCATIONS, UNIVERSAL_BONUS, DAILY_BONUS
 
-db = SheetsManager()
+db = DB()
 
 AW_NAME, AW_ID, AW_CONFIRM         = range(40, 43)
 RW_SEARCH, RW_SELECT, RW_CONFIRM   = range(50, 53)
@@ -935,9 +935,7 @@ async def ar_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     worker = ud["ar_worker"]
     calc = ud["ar_calc"]
 
-    from sheets import SheetsManager
-    db_local = db
-    db_local.save_entry(
+    db.save_entry(
         telegram_id=worker["telegram_id"],
         name=worker["name"],
         date=ud["ar_date"],
