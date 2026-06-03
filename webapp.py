@@ -561,3 +561,120 @@ def ping():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+@app.route("/migrate")
+def run_migration():
+    token = request.args.get("token", "")
+    if token != os.getenv("MIGRATE_TOKEN", ""):
+        return "❌ Forbidden", 403
+
+    import json
+    import gspread
+    from google.oauth2.service_account import Credentials
+    from supabase import create_client
+
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(
+        json.loads(os.getenv("GOOGLE_CREDS_JSON")), scopes=SCOPES
+    )
+    gc = gspread.authorize(creds)
+    ss = gc.open_by_key(os.getenv("SPREADSHEET_ID"))
+    sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+    def to_float(v):
+        try:
+            return float(str(v).replace(" ", "").replace(",", "."))
+        except:
+            return 0.0
+
+    def to_int(v):
+        try:
+            return int(str(v).strip().lstrip("'"))
+        except:
+            return 0
+
+    def read_sheet(name):
+        ws = ss.worksheet(name)
+        headers = ws.row_values(1)
+        rows = ws.get_all_values()[1:]
+        return [{headers[j]: (row[j] if j < len(row) else "")
+                 for j in range(len(headers))}
+                for row in rows if any(row)]
+
+    log = []
+
+    # Workers
+    sb.table("workers").delete().neq("id", 0).execute()
+    workers = read_sheet("Працівники")
+    ok = 0
+    for w in workers:
+        tid = to_int(w.get("telegram_id", ""))
+        name = w.get("name", "").strip()
+        if tid and name:
+            try:
+                sb.table("workers").insert({"telegram_id": tid, "name": name}).execute()
+                ok += 1
+            except:
+                pass
+    log.append(f"workers: {ok}/{len(workers)}")
+
+    # Roles
+    sb.table("roles").delete().neq("id", 0).execute()
+    roles = read_sheet("Ролі")
+    ok = 0
+    for r in roles:
+        tid = to_int(r.get("telegram_id", ""))
+        role = r.get("role", "").strip()
+        if tid and role:
+            try:
+                sb.table("roles").insert({
+                    "telegram_id": tid, "role": role,
+                    "location": r.get("location", "").strip()
+                }).execute()
+                ok += 1
+            except:
+                pass
+    log.append(f"roles: {ok}/{len(roles)}")
+
+    # Entries — батчами по 50
+    sb.table("entries").delete().neq("id", 0).execute()
+    entries = read_sheet("Записи")
+    ok = 0
+    batch = []
+    for e in entries:
+        tid = to_int(e.get("telegram_id", ""))
+        date = e.get("date", "").strip().lstrip("'")
+        loc  = e.get("location", "").strip()
+        if not tid or not date or not loc:
+            continue
+        batch.append({
+            "telegram_id": tid,
+            "name":        e.get("name", "").strip(),
+            "date":        date,
+            "location":    loc,
+            "hours":       to_float(e.get("hours", 0)),
+            "rate":        to_float(e.get("rate", 1)),
+            "revenue":     to_float(e.get("revenue", 0)),
+            "hourly_rate": to_float(e.get("hourly_rate", 0)),
+            "base_pay":    to_float(e.get("base_pay", 0)),
+            "rate_bonus":  to_float(e.get("rate_bonus", 0)),
+            "universal":   to_float(e.get("universal", 0)),
+            "bonus":       to_float(e.get("bonus", 0)),
+            "total":       to_float(e.get("total", 0)),
+        })
+        if len(batch) >= 50:
+            try:
+                sb.table("entries").insert(batch).execute()
+                ok += len(batch)
+            except Exception as ex:
+                log.append(f"batch error: {ex}")
+            batch = []
+    if batch:
+        try:
+            sb.table("entries").insert(batch).execute()
+            ok += len(batch)
+        except Exception as ex:
+            log.append(f"last batch error: {ex}")
+    log.append(f"entries: {ok}/{len(entries)}")
+
+    return "✅ Migration done: " + " | ".join(log)
