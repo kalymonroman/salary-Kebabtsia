@@ -36,7 +36,7 @@ class DB:
         return self._row(r.data[0]) if r.data else None
 
     def get_all_workers(self):
-        r = self.sb.table("workers").select("*").order("name").execute()
+        r = self.sb.table("workers").select("*").order("name").limit(10000).execute()
         return self._rows(r.data)
 
     def add_worker(self, telegram_id, name):
@@ -63,7 +63,7 @@ class DB:
         return self._rows(r.data)
 
     def get_all_roles(self):
-        r = self.sb.table("roles").select("*").execute()
+        r = self.sb.table("roles").select("*").limit(10000).execute()
         return self._rows(r.data)
 
     def set_role(self, telegram_id, role, location=""):
@@ -158,7 +158,7 @@ class DB:
         return sorted(data, key=lambda x: (self._parse_date(x["date"]), x["id"]))
 
     def get_all_worker_entries(self, telegram_id):
-        r = self.sb.table("entries").select("*").eq("telegram_id", int(telegram_id)).execute()
+        r = self.sb.table("entries").select("*").eq("telegram_id", int(telegram_id)).limit(10000).execute()
         data = self._rows(r.data)
         return sorted(data, key=lambda x: (self._parse_date(x["date"]), x["id"]))
 
@@ -243,6 +243,7 @@ class DB:
              .select("*")
              .eq("location", location)
              .eq("date", date)
+             .limit(10000)
              .execute())
         return self._rows(r.data)
 
