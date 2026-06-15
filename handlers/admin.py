@@ -974,3 +974,148 @@ def add_record_conv():
         },
         fallbacks=ADMIN_FALLBACKS,
     )
+
+
+# ── /del_record ───────────────────────────────────────────────────────────────
+
+DR_WORKER, DR_SELECT, DR_DATE, DR_PICK, DR_CONFIRM = range(90, 95)
+
+
+async def dr_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tid = update.effective_user.id
+    if not db.is_superadmin_or_above(tid):
+        await update.message.reply_text("⛔ Тільки для власника та головного адміна.")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "🗑 Видалення запису працівника\n\nВведіть ім'я або Telegram ID:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return DR_WORKER
+
+
+async def dr_worker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip()
+    try:
+        workers = [db.get_worker(int(query))]
+        workers = [w for w in workers if w]
+    except ValueError:
+        workers = db.search_workers(query)
+
+    if not workers:
+        await update.message.reply_text("❌ Не знайдено. Спробуйте ще раз:")
+        return DR_WORKER
+
+    if len(workers) == 1:
+        context.user_data["dr_worker"] = workers[0]
+        await update.message.reply_text(
+            f"👤 {workers[0]['name']}\n\nВведіть дату запису (наприклад: 15.03 або 15.03.2025):"
+        )
+        return DR_DATE
+
+    context.user_data["dr_results"] = workers
+    kb = ReplyKeyboardMarkup(
+        [[f"{i}. {w['name']}"] for i, w in enumerate(workers, 1)],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    await update.message.reply_text("Знайдено кілька - оберіть:", reply_markup=kb)
+    return DR_SELECT
+
+
+async def dr_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        idx = int(update.message.text.split(".")[0]) - 1
+        worker = context.user_data["dr_results"][idx]
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Оберіть зі списку:")
+        return DR_SELECT
+    context.user_data["dr_worker"] = worker
+    await update.message.reply_text(
+        f"👤 {worker['name']}\n\nВведіть дату запису (наприклад: 15.03 або 15.03.2025):"
+    )
+    return DR_DATE
+
+
+async def dr_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    date = _parse_any_date(update.message.text)
+    if not date:
+        await update.message.reply_text("❌ Невірний формат. Введіть дату (наприклад: 15.03):")
+        return DR_DATE
+
+    worker = context.user_data["dr_worker"]
+    entries = db.get_entries_by_date(worker["telegram_id"], date)
+
+    if not entries:
+        await update.message.reply_text(
+            f"❌ Записів за {date} для {worker['name']} не знайдено.\nСпробуйте іншу дату:"
+        )
+        return DR_DATE
+
+    if len(entries) == 1:
+        context.user_data["dr_entry"] = entries[0]
+        return await _dr_ask_confirm(update, context)
+
+    context.user_data["dr_entries"] = entries
+    lines = [f"За {date} знайдено {len(entries)} записи:\n"]
+    for i, e in enumerate(entries, 1):
+        lines.append(f"{i}. {e['location']} | {e['hours']}г | {float(e.get('total', 0)):,.0f}₴")
+    lines.append("\nВведіть номер для видалення:")
+    await update.message.reply_text("\n".join(lines))
+    return DR_PICK
+
+
+async def dr_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        idx = int(update.message.text.strip()) - 1
+        entry = context.user_data["dr_entries"][idx]
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Введіть коректний номер:")
+        return DR_PICK
+    context.user_data["dr_entry"] = entry
+    return await _dr_ask_confirm(update, context)
+
+
+async def _dr_ask_confirm(update, context):
+    e = context.user_data["dr_entry"]
+    w = context.user_data["dr_worker"]
+    kb = ReplyKeyboardMarkup(
+        [["🗑 Так, видалити", "❌ Скасувати"]],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+    await update.message.reply_text(
+        f"Видалити запис?\n\n"
+        f"👤 {w['name']}\n"
+        f"📅 {e['date']} — {e['location']}\n"
+        f"⏱ {e['hours']} год | 💵 {float(e.get('total', 0)):,.0f} грн",
+        reply_markup=kb
+    )
+    return DR_CONFIRM
+
+
+async def dr_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "Так" in update.message.text:
+        entry = context.user_data["dr_entry"]
+        worker = context.user_data["dr_worker"]
+        db.delete_entry_by_row(entry["row_id"])
+        await update.message.reply_text(
+            f"✅ Запис видалено!\n\n"
+            f"👤 {worker['name']}\n"
+            f"📅 {entry['date']} — {entry['location']}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await update.message.reply_text("Скасовано.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+
+def del_record_conv():
+    return ConversationHandler(
+        entry_points=[CommandHandler("del_record", dr_start)],
+        states={
+            DR_WORKER:  [MessageHandler(filters.TEXT & ~filters.COMMAND, dr_worker)],
+            DR_SELECT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, dr_select)],
+            DR_DATE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, dr_date)],
+            DR_PICK:    [MessageHandler(filters.TEXT & ~filters.COMMAND, dr_pick)],
+            DR_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, dr_confirm)],
+        },
+        fallbacks=ADMIN_FALLBACKS,
+    )
