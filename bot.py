@@ -10,7 +10,7 @@ from handlers.worker import (
 from handlers.admin import (
     day_view, toggle_callback, stats, report, worker_filter,
     list_workers, add_worker_conv, remove_worker_conv,
-    admin_edit_worker_conv, add_record_conv
+    admin_edit_worker_conv, add_record_conv, del_record_conv
 )
 from handlers.owner import (
     access_menu, list_roles, set_role_conv, unset_role_conv
@@ -59,6 +59,7 @@ def main():
     application.add_handler(remove_worker_conv())
     application.add_handler(admin_edit_worker_conv())
     application.add_handler(add_record_conv())
+    application.add_handler(del_record_conv())
     application.add_handler(CommandHandler("day", day_view))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("report", report))
