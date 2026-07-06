@@ -1,12 +1,18 @@
 """
-Хендлери для працівника v2:
+Хендлери для працівника v3:
   - Заповнити день (можна двічі — різні заклади)
   - Мої записи
-  - Редагувати запис (лише поточний місяць)
+  - Редагувати запис
   - Додати пропущений день
-  - Видалити день (лише поточний місяць)
+  - Видалити день
+
+Блокування редагування:
+  Записи за місяць М можна змінювати/додавати/видаляти до
+  1-го числа місяця М+1, 18:00 за київським часом.
+  Після цього моменту місяць М закривається назавжди.
 """
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ConversationHandler, CommandHandler, MessageHandler,
@@ -16,6 +22,9 @@ from calc import calculate, format_result, LOCATIONS
 from db import DB
 
 db = DB()
+
+KYIV = ZoneInfo("Europe/Kyiv")
+LOCK_HOUR = 18  # блокування о 18:00 першого числа наступного місяця (Київ)
 
 (LOC, RATE, HOURS, REVENUE) = range(4)
 (EDIT_DATE, EDIT_PICK, EDIT_FIELD, EDIT_VALUE) = range(10, 14)
@@ -41,14 +50,11 @@ MENU_FILTER = filters.Regex(
     r"^(📝 Заповнити день|📊 Мої записи|➕ Додати день|🗑 Видалити день|✏️ Змінити запис)$"
 )
 
-
-def _today():
-    return datetime.now().strftime("%d.%m.%Y")
-
-
-def _this_month_year():
-    n = datetime.now()
-    return n.month, n.year
+LOCK_MSG = (
+    "🔒 Редагування записів за цей місяць закрито.\n"
+    "Записи можна змінювати до 18:00 першого числа наступного місяця.\n"
+    "Якщо потрібно виправити — зверніться до адміністратора."
+)
 
 
 def _f(val):
@@ -59,18 +65,47 @@ def _f(val):
         return 0.0
 
 
-def _validate_date_current_month(text: str):
-    now = datetime.now()
+def _now_kyiv():
+    return datetime.now(KYIV)
+
+
+def _today():
+    return _now_kyiv().strftime("%d.%m.%Y")
+
+
+def _this_month_year():
+    n = _now_kyiv()
+    return n.month, n.year
+
+
+def _is_month_editable(month: int, year: int) -> bool:
+    """Чи відкрите вікно редагування для (month, year) прямо зараз (Київ)."""
+    now = _now_kyiv()
+    if month == 12:
+        dy, dm = year + 1, 1
+    else:
+        dy, dm = year, month + 1
+    deadline = datetime(dy, dm, 1, LOCK_HOUR, 0, 0, tzinfo=KYIV)
+    return now < deadline
+
+
+def _validate_editable_date(text: str):
+    """
+    Парсить дату (dd.mm або dd.mm.yyyy) і перевіряє чи відкрите
+    вікно редагування для її місяця.
+    Повертає нормалізовану 'dd.mm.yyyy' або None.
+    """
+    now = _now_kyiv()
     parts = text.strip().split(".")
     if len(parts) == 2:
         text = f"{parts[0].zfill(2)}.{parts[1].zfill(2)}.{now.year}"
     try:
         d = datetime.strptime(text, "%d.%m.%Y")
-        if d.month == now.month and d.year == now.year:
-            return d.strftime("%d.%m.%Y")
     except ValueError:
-        pass
-    return None
+        return None
+    if not _is_month_editable(d.month, d.year):
+        return None
+    return d.strftime("%d.%m.%Y")
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -94,6 +129,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"/workers — список працівників\n"
             f"/add_worker — додати працівника\n"
             f"/edit_worker — редагувати запис працівника\n"
+            f"/add_record — додати запис (будь-який період)\n"
+            f"/del_record — видалити запис (будь-який період)\n"
             f"/day — перегляд дня\n"
             f"/stats — статистика закладу\n"
             + ("/report — зведений звіт\n/access — доступи\n"
@@ -206,7 +243,7 @@ async def my_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         total = sum(_f(r["total"]) for r in entries)
         hours = sum(_f(r["hours"]) for r in entries)
-        now = datetime.now()
+        now = _now_kyiv()
 
         lines = [f"📊 *{worker['name']}* — {now.strftime('%B %Y')}\n"]
         for r in entries:
@@ -226,7 +263,7 @@ async def my_records(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Помилка: {str(e)[:200]}")
 
 
-# ── Редагувати запис (лише поточний місяць) ───────────────────────────────────
+# ── Редагувати запис ──────────────────────────────────────────────────────────
 
 EDIT_FIELDS_KB = ReplyKeyboardMarkup([
     ["Змінити заклад", "Змінити ставку"],
@@ -240,22 +277,18 @@ async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db.get_worker(tid):
         await update.message.reply_text("⛔ Вас немає в системі.")
         return ConversationHandler.END
-    now = datetime.now()
     await update.message.reply_text(
-        f"Введіть дату запису для зміни:\n_(лише {now.strftime('%B %Y')}, наприклад: 05.05)_",
+        "Введіть дату запису для зміни:\n_(наприклад: 05.05)_",
         parse_mode="Markdown", reply_markup=ReplyKeyboardRemove()
     )
     return EDIT_DATE
 
 
 async def edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date = _validate_date_current_month(update.message.text)
+    date = _validate_editable_date(update.message.text)
     if not date:
-        now = datetime.now()
-        await update.message.reply_text(
-            f"❌ Дата має бути в межах {now.strftime('%B %Y')}"
-        )
-        return EDIT_DATE
+        await update.message.reply_text(LOCK_MSG, reply_markup=MAIN_KB)
+        return ConversationHandler.END
     tid = update.effective_user.id
     entries = db.get_entries_by_date(tid, date)
     if not entries:
@@ -290,7 +323,7 @@ async def _ask_edit_field(update, context):
     entry = context.user_data["edit_entry"]
     await update.message.reply_text(
         f"📅 {entry['date']} — {entry['location']}\n"
-        f"⏱ {entry['hours']} год | Ставка {entry['rate']} | Виторг {float(entry['revenue']):,.0f}\n\n"
+        f"⏱ {entry['hours']} год | Ставка {entry['rate']} | Виторг {_f(entry['revenue']):,.0f}\n\n"
         f"Що змінити?",
         reply_markup=EDIT_FIELDS_KB
     )
@@ -357,7 +390,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Оновлено!\n\n"
         f"📅 {updated['date']} — {updated['location']}\n"
         f"⏱ {updated['hours']} год | Ставка {updated['rate']}\n"
-        f"💵 {float(updated['total']):,.0f} грн",
+        f"💵 {_f(updated['total']):,.0f} грн",
         reply_markup=MAIN_KB
     )
     return ConversationHandler.END
@@ -370,20 +403,18 @@ async def add_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db.get_worker(tid):
         await update.message.reply_text("⛔ Вас немає в системі.")
         return ConversationHandler.END
-    now = datetime.now()
     await update.message.reply_text(
-        f"Введіть дату яку хочете додати:\n_(лише {now.strftime('%B %Y')}, наприклад: 10.05)_",
+        "Введіть дату яку хочете додати:\n_(наприклад: 10.05)_",
         parse_mode="Markdown", reply_markup=ReplyKeyboardRemove()
     )
     return ADD_DATE
 
 
 async def add_day_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date = _validate_date_current_month(update.message.text)
+    date = _validate_editable_date(update.message.text)
     if not date:
-        now = datetime.now()
-        await update.message.reply_text(f"❌ Дата має бути в межах {now.strftime('%B %Y')}")
-        return ADD_DATE
+        await update.message.reply_text(LOCK_MSG, reply_markup=MAIN_KB)
+        return ConversationHandler.END
     context.user_data["date"] = date
     await update.message.reply_text(f"📅 {date}\n\nОберіть заклад:", reply_markup=LOC_KB)
     return ADD_LOC
@@ -451,7 +482,7 @@ async def add_day_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ── Видалити день (лише поточний місяць) ─────────────────────────────────────
+# ── Видалити день ─────────────────────────────────────────────────────────────
 
 async def del_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -464,7 +495,7 @@ async def del_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not entries:
             await update.message.reply_text("📭 Немає записів для видалення.", reply_markup=MAIN_KB)
             return ConversationHandler.END
-        now = datetime.now()
+        now = _now_kyiv()
         lines = [f"Ваші записи за {now.strftime('%B %Y')}:\n"]
         for r in entries:
             lines.append(f"  {r['date']} | {r['location']} | {r['hours']}г | {_f(r['total']):,.0f}₴")
@@ -477,11 +508,10 @@ async def del_day_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def del_day_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    date = _validate_date_current_month(update.message.text)
+    date = _validate_editable_date(update.message.text)
     if not date:
-        now = datetime.now()
-        await update.message.reply_text(f"❌ Дата має бути в межах {now.strftime('%B %Y')}")
-        return DEL_DATE
+        await update.message.reply_text(LOCK_MSG, reply_markup=MAIN_KB)
+        return ConversationHandler.END
     tid = update.effective_user.id
     entries = db.get_entries_by_date(tid, date)
     if not entries:
