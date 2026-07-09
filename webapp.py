@@ -388,10 +388,9 @@ function toggle(rowId,field,val){
   updateSaveBar();render();
   const updatedData=allData.map(r=>{
     if(r.row_id!==rowId)return r;
-    return {...r,
-      universal:changed[rowId]?.univ??(parseFloat(r.universal||0)>0)?150:0,
-      bonus:changed[rowId]?.bonus??(parseFloat(r.bonus||0)>0)?200:0
-    };
+    const uOn=(changed[rowId]?.univ)??(parseFloat(r.universal||0)>0);
+    const bOn=(changed[rowId]?.bonus)??(parseFloat(r.bonus||0)>0);
+    return {...r, universal:uOn?150:0, bonus:bOn?200:0};
   });
   buildStats(updatedData);
 }
@@ -405,7 +404,7 @@ async function saveChanges(){
   const updates=Object.entries(changed).map(([rowId,fields])=>({row_id:parseInt(rowId),...fields}));
   const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});
   const d=await r.json();
-  if(d.ok){changed={};updateSaveBar();await loadAll();showToast('✅ Збережено в Google Sheets','ok');}
+  if(d.ok){changed={};updateSaveBar();await loadAll();showToast('✅ Збережено','ok');}
   else showToast('❌ Помилка збереження','err');
 }
 function discardChanges(){changed={};updateSaveBar();render();}
@@ -542,8 +541,19 @@ def api_save():
             entry = db.get_entry_by_row(row_id)
             if not entry:
                 continue
-            univ = 150.0 if u.get("univ", False) else 0.0
-            bonus = 200.0 if u.get("bonus", False) else 0.0
+            # Поточні значення з БД — джерело істини.
+            cur_univ = float(entry.get("universal", 0) or 0)
+            cur_bonus = float(entry.get("bonus", 0) or 0)
+            # Змінюємо ЛИШЕ ті поля, що реально прийшли в запиті.
+            # Якщо поле відсутнє — зберігаємо поточне значення, не обнуляємо.
+            if "univ" in u:
+                univ = 150.0 if u.get("univ") else 0.0
+            else:
+                univ = cur_univ
+            if "bonus" in u:
+                bonus = 200.0 if u.get("bonus") else 0.0
+            else:
+                bonus = cur_bonus
             db.set_universal_bonus(
                 int(entry["telegram_id"]), entry["date"],
                 univ, bonus, row_id=row_id
