@@ -82,6 +82,28 @@ ADMIN_FALLBACKS = [
 
 # ── /day ──────────────────────────────────────────────────────────────────────
 
+def _entry_buttons(e):
+    """Будує рядок з двох кнопок (університал, премія) для одного запису.
+    Кнопки stateless: callback несе лише row_id, стан завжди читається з БД."""
+    univ  = float(e.get("universal", 0) or 0)
+    bonus = float(e.get("bonus", 0) or 0)
+    row_id = e.get("row_id", 0)
+
+    univ_icon  = "🔧✅" if univ > 0 else "🔧⬜"
+    bonus_icon = "⭐✅" if bonus > 0 else "⭐⬜"
+
+    return [
+        InlineKeyboardButton(
+            f"{univ_icon} {e['name']}",
+            callback_data=f"univ:{row_id}"
+        ),
+        InlineKeyboardButton(
+            bonus_icon,
+            callback_data=f"bonus:{row_id}"
+        ),
+    ]
+
+
 async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tid = update.effective_user.id
     locations_for_admin = _get_locations_for(tid)
@@ -154,26 +176,9 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
 
     for e in entries:
-        univ = float(e.get("universal", 0) or 0)
-        bonus = float(e.get("bonus", 0) or 0)
         total = float(e.get("total", 0) or 0)
-        row_id = e.get("row_id", 0)
-        tid_w = e.get("telegram_id", "")
-
-        univ_icon  = "🔧✅" if univ > 0 else "🔧⬜"
-        bonus_icon = "⭐✅" if bonus > 0 else "⭐⬜"
-
         text += f"👤 {e['name']} — {_fmt(total)} грн\n"
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{univ_icon} {e['name']}",
-                callback_data=f"univ:{tid_w}:{date}:{0 if univ > 0 else 1}:{row_id}"
-            ),
-            InlineKeyboardButton(
-                bonus_icon,
-                callback_data=f"bonus:{tid_w}:{date}:{0 if bonus > 0 else 1}:{row_id}"
-            ),
-        ])
+        keyboard.append(_entry_buttons(e))
 
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -182,7 +187,6 @@ async def day_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
 
     tid_admin = query.from_user.id
     if not db.is_admin_or_above(tid_admin):
@@ -190,53 +194,60 @@ async def toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     parts = query.data.split(":")
-    if len(parts) < 5:
+    if len(parts) < 2:
         await query.answer("Помилка даних", show_alert=True)
         return
 
-    action  = parts[0]
-    tid_w   = parts[1]
-    date    = parts[2]
-    val     = int(parts[3])
-    row_id  = int(parts[4])
+    action = parts[0]
+    row_id = int(parts[1])
 
     entry = db.get_entry_by_row(row_id)
     if not entry:
         await query.answer("Запис не знайдено", show_alert=True)
         return
 
+    tid_w         = int(entry.get("telegram_id", 0) or 0)
+    date          = entry.get("date", "")
     current_univ  = float(entry.get("universal", 0) or 0)
     current_bonus = float(entry.get("bonus", 0) or 0)
 
+    # Перемикаємо лише те поле, на яке натиснули; інше зберігаємо як є в БД
     if action == "univ":
-        new_univ = float(UNIVERSAL_BONUS) if val else 0.0
-        db.set_universal_bonus(int(tid_w), date, new_univ, current_bonus, row_id=row_id)
-        await query.answer(f"🔧 Університал {'нараховано' if val else 'знято'}")
+        new_univ = 0.0 if current_univ > 0 else float(UNIVERSAL_BONUS)
+        db.set_universal_bonus(tid_w, date, new_univ, current_bonus, row_id=row_id)
+        await query.answer(f"🔧 Університал {'знято' if new_univ == 0 else 'нараховано'}")
     else:
-        new_bonus = float(DAILY_BONUS) if val else 0.0
-        db.set_universal_bonus(int(tid_w), date, current_univ, new_bonus, row_id=row_id)
-        await query.answer(f"⭐ Премія {'нарахована' if val else 'знята'}")
+        new_bonus = 0.0 if current_bonus > 0 else float(DAILY_BONUS)
+        db.set_universal_bonus(tid_w, date, current_univ, new_bonus, row_id=row_id)
+        await query.answer(f"⭐ Премія {'знята' if new_bonus == 0 else 'нарахована'}")
+
+    # Перемальовуємо ВЕСЬ рядок цього запису з актуальних даних БД
+    fresh = db.get_entry_by_row(row_id)
+    fresh_univ  = float(fresh.get("universal", 0) or 0)
+    fresh_bonus = float(fresh.get("bonus", 0) or 0)
+    fresh_name  = fresh.get("name", "")
+
+    new_univ_btn = InlineKeyboardButton(
+        f"{'🔧✅' if fresh_univ > 0 else '🔧⬜'} {fresh_name}",
+        callback_data=f"univ:{row_id}"
+    )
+    new_bonus_btn = InlineKeyboardButton(
+        "⭐✅" if fresh_bonus > 0 else "⭐⬜",
+        callback_data=f"bonus:{row_id}"
+    )
 
     keyboard = query.message.reply_markup.inline_keyboard
     new_keyboard = []
     for row in keyboard:
-        new_row = []
-        for btn in row:
-            if btn.callback_data == query.data:
-                new_val = int(not val)
-                if action == "univ":
-                    icon = "🔧✅" if val else "🔧⬜"
-                    name_part = btn.text.split(" ", 1)[1] if " " in btn.text else ""
-                    new_text = f"{icon} {name_part}"
-                else:
-                    new_text = "⭐✅" if val else "⭐⬜"
-                new_row.append(InlineKeyboardButton(
-                    new_text,
-                    callback_data=f"{action}:{tid_w}:{date}:{new_val}:{row_id}"
-                ))
-            else:
-                new_row.append(btn)
-        new_keyboard.append(new_row)
+        # Рядок належить цьому запису, якщо будь-яка кнопка має цей row_id
+        row_matches = any(
+            btn.callback_data in (f"univ:{row_id}", f"bonus:{row_id}")
+            for btn in row
+        )
+        if row_matches:
+            new_keyboard.append([new_univ_btn, new_bonus_btn])
+        else:
+            new_keyboard.append(row)
 
     try:
         await query.edit_message_reply_markup(InlineKeyboardMarkup(new_keyboard))
